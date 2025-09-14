@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer, AutoModel, AutoConfig
+from transformers import AutoTokenizer, AutoModel
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
 from imblearn.over_sampling import SMOTE
@@ -17,12 +17,8 @@ import os
 import nltk
 from nltk.tokenize import sent_tokenize, word_tokenize
 from nltk.corpus import stopwords
-import gc
-import psutil
 
 # Download NLTK resources if needed
-
-nltk.download('punkt_tab')
 try:
     nltk.data.find('tokenizers/punkt')
 except LookupError:
@@ -454,36 +450,30 @@ class FeatureFusionLayer(nn.Module):
         self.dropout = nn.Dropout(0.2)
         
     def forward(self, bert_embedding, handcrafted_features):
-        # Check if inputs are 2D or 3D, and project
-        bert_proj = self.bert_projection(bert_embedding)            # [batch, fusion_dim] or [batch, seq, fusion_dim]
+        # Project both feature types to the same dimension
+        bert_proj = self.bert_projection(bert_embedding)
         handcrafted_proj = self.handcrafted_projection(handcrafted_features)
-
-        # Ensure 3D shape: [batch_size, seq_len, fusion_dim]
-        if bert_proj.dim() == 2:
-            bert_proj = bert_proj.unsqueeze(1)  # Add seq_len = 1
-        if handcrafted_proj.dim() == 2:
-            handcrafted_proj = handcrafted_proj.unsqueeze(1)
-
-        # Apply attention (batch_first=True)
-        attn_output, _ = self.attention(
-            bert_proj, handcrafted_proj, handcrafted_proj
-        )  # Output: [batch_size, seq_len, fusion_dim]
-
-        # Remove seq_len dim if it is 1
-        attn_output = attn_output.squeeze(1)
-        bert_proj = bert_proj.squeeze(1)
-        handcrafted_proj = handcrafted_proj.squeeze(1)
-
-        # Gated fusion
-        combined = torch.cat([bert_proj, handcrafted_proj], dim=-1)  # [batch_size, 2*fusion_dim]
+        
+        # Reshape for attention
+        bert_proj = bert_proj.unsqueeze(0)  # [1, batch_size, fusion_dim]
+        handcrafted_proj = handcrafted_proj.unsqueeze(0)  # [1, batch_size, fusion_dim]
+        
+        # Cross-attention between features
+        attn_output, _ = self.attention(bert_proj, handcrafted_proj, handcrafted_proj)
+        attn_output = attn_output.squeeze(0)  # [batch_size, fusion_dim]
+        
+        # Calculate gate values for feature importance
+        combined = torch.cat([bert_proj.squeeze(0), handcrafted_proj.squeeze(0)], dim=-1)
         gate_values = self.gate(combined)
-        fused = gate_values * bert_proj + (1 - gate_values) * handcrafted_proj
+        
+        # Gated fusion
+        fused = gate_values * bert_proj.squeeze(0) + (1 - gate_values) * handcrafted_proj.squeeze(0)
+        
+        # Normalization and dropout
         output = self.layer_norm(fused)
         output = self.dropout(output)
-
+        
         return output
-
-
 
 class HierarchicalAttention(nn.Module):
     """
@@ -508,222 +498,83 @@ class HierarchicalAttention(nn.Module):
     def forward(self, word_embeddings, attention_mask):
         """
         Args:
-            word_embeddings: [batch_size, max_sections, max_sents, max_words, hidden_dim]
-            attention_mask:  [batch_size, max_sections, max_sents, max_words]
+            word_embeddings: Tensor of shape [batch_size, max_sections, max_sents, max_words, hidden_dim]
+            attention_mask: Tensor of shape [batch_size, max_sections, max_sents, max_words]
         """
         batch_size, max_sections, max_sents, max_words, hidden_dim = word_embeddings.shape
-        section_embeddings = []
+        doc_embeddings = []
 
         for b in range(batch_size):
-            sentence_embeddings = []
-
+            section_embeddings = []
             for s in range(max_sections):
-                sent_embeddings = []
-
+                sentence_embeddings = []
                 for i in range(max_sents):
-                    words = word_embeddings[b, s, i]           # [max_words, hidden_dim]
-                    mask = attention_mask[b, s, i]             # [max_words]
+                    words = word_embeddings[b, s, i]  # [max_words, hidden_dim]
+                    mask = attention_mask[b, s, i]    # [max_words]
 
-                    if words.dim() == 3 and words.shape[0] == 1:
-                        words = words.squeeze(0)
                     if mask.sum() > 0:
-                        words = words.unsqueeze(1)  # [max_words, 1, hidden_dim]
-                        words=words
                         key_padding_mask = (mask == 0).unsqueeze(0)  # [1, max_words]
+                        words = words.unsqueeze(1)                  # [max_words, 1, hidden_dim]
+                        words = words.transpose(0, 1)               # [1, max_words, hidden_dim] -> [seq_len, batch, embed]
+                        words = words.transpose(0, 1)               # Final: [max_words, 1, hidden_dim]
 
                         attn_output, _ = self.word_attention(
                             words, words, words,
                             key_padding_mask=key_padding_mask
                         )
                         attn_output = attn_output.squeeze(1)  # [max_words, hidden_dim]
-
                         sent_embedding = (attn_output * mask.unsqueeze(-1)).sum(dim=0) / (mask.sum() + 1e-10)
                     else:
-                        sent_embedding = torch.zeros(hidden_dim, device=words.device)
+                        sent_embedding = torch.zeros(hidden_dim, device=word_embeddings.device)
+                    sentence_embeddings.append(sent_embedding)
 
-                    sent_embeddings.append(sent_embedding)
-
-                if sent_embeddings:
-                    section_sent_embeddings = torch.stack(sent_embeddings)  # [max_sents, hidden_dim]
-                    sent_mask = (attention_mask[b, s].sum(dim=1) > 0).float()  # [max_sents]
+                if sentence_embeddings:
+                    section_sent_embeddings = torch.stack(sentence_embeddings)  # [max_sents, hidden_dim]
+                    sent_mask = (attention_mask[b, s].sum(dim=1) > 0).float()   # [max_sents]
 
                     if sent_mask.sum() > 0:
-                        section_sent_embeddings = section_sent_embeddings.unsqueeze(1)  # [max_sents, 1, hidden_dim]
                         key_padding_mask = (sent_mask == 0).unsqueeze(0)  # [1, max_sents]
+                        section_sent_embeddings = section_sent_embeddings.unsqueeze(1)  # [max_sents, 1, hidden_dim]
+                        section_sent_embeddings = section_sent_embeddings.transpose(0, 1)  # [1, max_sents, hidden_dim]
+                        section_sent_embeddings = section_sent_embeddings.transpose(0, 1)  # Final: [max_sents, 1, hidden_dim]
 
-                        sent_attn_output, _ = self.sentence_attention(
+                        attn_output, _ = self.sentence_attention(
                             section_sent_embeddings, section_sent_embeddings, section_sent_embeddings,
                             key_padding_mask=key_padding_mask
                         )
-                        sent_attn_output = sent_attn_output.squeeze(1)
-
-                        section_embedding = (sent_attn_output * sent_mask.unsqueeze(-1)).sum(dim=0) / (sent_mask.sum() + 1e-10)
+                        attn_output = attn_output.squeeze(1)  # [max_sents, hidden_dim]
+                        section_embedding = (attn_output * sent_mask.unsqueeze(-1)).sum(dim=0) / (sent_mask.sum() + 1e-10)
                     else:
-                        section_embedding = torch.zeros(hidden_dim, device=section_sent_embeddings.device)
+                        section_embedding = torch.zeros(hidden_dim, device=word_embeddings.device)
+                    section_embeddings.append(section_embedding)
                 else:
-                    section_embedding = torch.zeros(hidden_dim, device=word_embeddings.device)
+                    section_embeddings.append(torch.zeros(hidden_dim, device=word_embeddings.device))
 
-                sentence_embeddings.append(section_embedding)
-
-            if sentence_embeddings:
-                doc_section_embeddings = torch.stack(sentence_embeddings)  # [max_sections, hidden_dim]
+            if section_embeddings:
+                doc_section_embeddings = torch.stack(section_embeddings)  # [max_sections, hidden_dim]
                 section_mask = (attention_mask[b].sum(dim=(1, 2)) > 0).float()  # [max_sections]
 
                 if section_mask.sum() > 0:
-                    doc_section_embeddings = doc_section_embeddings.unsqueeze(1)  # [max_sections, 1, hidden_dim]
                     key_padding_mask = (section_mask == 0).unsqueeze(0)  # [1, max_sections]
+                    doc_section_embeddings = doc_section_embeddings.unsqueeze(1)  # [max_sections, 1, hidden_dim]
+                    doc_section_embeddings = doc_section_embeddings.transpose(0, 1)  # [1, max_sections, hidden_dim]
+                    doc_section_embeddings = doc_section_embeddings.transpose(0, 1)  # Final: [max_sections, 1, hidden_dim]
 
-                    section_attn_output, _ = self.section_attention(
+                    attn_output, _ = self.section_attention(
                         doc_section_embeddings, doc_section_embeddings, doc_section_embeddings,
                         key_padding_mask=key_padding_mask
                     )
-                    section_attn_output = section_attn_output.squeeze(1)
-
-                    doc_embedding = (section_attn_output * section_mask.unsqueeze(-1)).sum(dim=0) / (section_mask.sum() + 1e-10)
+                    attn_output = attn_output.squeeze(1)  # [max_sections, hidden_dim]
+                    doc_embedding = (attn_output * section_mask.unsqueeze(-1)).sum(dim=0) / (section_mask.sum() + 1e-10)
                 else:
-                    doc_embedding = torch.zeros(hidden_dim, device=doc_section_embeddings.device)
+                    doc_embedding = torch.zeros(hidden_dim, device=word_embeddings.device)
             else:
                 doc_embedding = torch.zeros(hidden_dim, device=word_embeddings.device)
 
-            section_embeddings.append(doc_embedding)
+            doc_embeddings.append(doc_embedding)
 
-        return torch.stack(section_embeddings)
+        return torch.stack(doc_embeddings)  # [batch_size, hidden_dim]
 
-
-# Add memory optimization for forward pass in HierarchicalBiasPredictionModel
-def forward_with_memory_optimization(self, input_ids, attention_mask, handcrafted_features):
-    batch_size = input_ids.size(0)
-    
-    # Reshape for BERT processing
-    # Original shape: [batch_size, max_sections, max_sents, max_seq_length]
-    max_sections, max_sents, max_seq_length = input_ids.size(1), input_ids.size(2), input_ids.size(3)
-    
-    # Process each sentence with BERT
-    word_embeddings = []
-    for b in range(batch_size):
-        section_embeddings = []
-        for s in range(max_sections):
-            sentence_embeddings = []
-            for i in range(max_sents):
-                # Process single sentence through BERT
-                input_ids_sent = input_ids[b, s, i].unsqueeze(0)  # [1, max_seq_length]
-                attention_mask_sent = attention_mask[b, s, i].unsqueeze(0)  # [1, max_seq_length]
-                
-                # Skip processing empty sentences to save memory
-                if attention_mask_sent.sum() > 0:
-                    # Process with BERT but clear cache after each step
-                    with torch.no_grad():  # Use no_grad for inference parts
-                        outputs = self.bert(
-                            input_ids=input_ids_sent, 
-                            attention_mask=attention_mask_sent,
-                            output_hidden_states=True
-                        )
-                        
-                        # Get token embeddings from last layer
-                        token_embeddings = outputs.last_hidden_state.squeeze(0).detach()  # [max_seq_length, hidden_size]
-                        
-                        # Explicitly delete to free memory
-                        del outputs
-                else:
-                    # Create zero embeddings for empty sentences
-                    token_embeddings = torch.zeros(
-                        max_seq_length, self.bert_dim, device=input_ids.device)
-                
-                sentence_embeddings.append(token_embeddings)
-            
-            # Stack to get all sentence embeddings for this section
-            if sentence_embeddings:
-                section_embeddings.append(torch.stack(sentence_embeddings))
-            else:
-                # Create empty section if no sentences
-                empty_section = torch.zeros(
-                    max_sents, max_seq_length, self.bert_dim, device=input_ids.device)
-                section_embeddings.append(empty_section)
-        
-        # Stack to get all section embeddings for this document
-        if section_embeddings:
-            word_embeddings.append(torch.stack(section_embeddings))
-        else:
-            # Create empty document if no sections
-            empty_doc = torch.zeros(
-                max_sections, max_sents, max_seq_length, self.bert_dim, device=input_ids.device)
-            word_embeddings.append(empty_doc)
-    
-    # Stack to get embeddings for the entire batch
-    word_embeddings = torch.stack(word_embeddings)  # [batch_size, max_sections, max_sents, max_seq_length, hidden_dim]
-    
-    # Apply hierarchical attention
-    doc_embeddings = []
-    for b in range(batch_size):
-        doc_embedding = self.hierarchical_attention(
-            word_embeddings[b].unsqueeze(0),  # Add batch dimension
-            attention_mask[b].unsqueeze(0)
-        )
-        doc_embeddings.append(doc_embedding)
-    
-    # Free memory
-    del word_embeddings
-    
-    doc_embeddings = torch.cat(doc_embeddings, dim=0)
-    
-    # Feature fusion
-    fused_features = self.feature_fusion(doc_embeddings, handcrafted_features)
-    
-    # Free memory
-    del doc_embeddings
-    
-    # Final classification
-    x = self.fc1(fused_features)
-    x = self.relu(x)
-    x = self.layer_norm(x)
-    x = self.dropout(x)
-    output = self.fc2(x)
-    
-    return output
-
-
-# Modify the HierarchicalBiasPredictionModel class to use memory-optimized forward method
-class HierarchicalBiasPredictionModel(nn.Module):
-    def __init__(self, bert_model_name, num_classes=3, dropout_rate=0.3, feature_dim=20):
-        super(HierarchicalBiasPredictionModel, self).__init__()
-        
-        # Load BERT with low memory footprint config
-        config = AutoConfig.from_pretrained(bert_model_name)
-        
-        # Reduce model complexity for CPU
-        config.num_hidden_layers = 6  # Reduce from 12
-        config.hidden_size = 384  # Reduce from 768
-        config.intermediate_size = 1536  # Reduce from 3072
-        config.num_attention_heads = 6  # Reduce from 12
-        
-        print("Loading BERT with reduced complexity for CPU processing")
-        self.bert = AutoModel.from_pretrained(bert_model_name, config=config)
-        
-        self.dropout = nn.Dropout(dropout_rate)
-        
-        # Dimensions updated for smaller model
-        self.bert_dim = config.hidden_size
-        self.handcrafted_dim = feature_dim
-        self.fusion_dim = 128  # Reduced from 256
-        
-        # Hierarchical attention
-        self.hierarchical_attention = HierarchicalAttention(hidden_dim=self.bert_dim)
-        
-        # Feature fusion layer
-        self.feature_fusion = FeatureFusionLayer(
-            bert_dim=self.bert_dim, 
-            handcrafted_dim=self.handcrafted_dim,
-            fusion_dim=self.fusion_dim
-        )
-        
-        # Classification layers - simplified
-        self.fc1 = nn.Linear(self.fusion_dim, 64)  # Reduced from 128
-        self.fc2 = nn.Linear(64, num_classes)
-        self.relu = nn.ReLU()
-        self.layer_norm = nn.LayerNorm(64)  # Adjusted to match fc1 output
-        
-        # Use memory-optimized forward
-        self.forward = forward_with_memory_optimization.__get__(self)
 
 
 class HierarchicalBiasPredictionModel(nn.Module):
@@ -780,7 +631,7 @@ class HierarchicalBiasPredictionModel(nn.Module):
                         )
                         
                         # Get token embeddings from last layer
-                        token_embeddings = outputs.last_hidden_state.squeeze(0)  # [max_seq_length, hidden_size]
+                        token_embeddings = outputs.last_hidden_state[0]  # [max_seq_length, hidden_size]
                     else:
                         # Create zero embeddings for empty sentences
                         token_embeddings = torch.zeros(
@@ -819,7 +670,6 @@ class HierarchicalBiasPredictionModel(nn.Module):
         output = self.fc2(x)
         
         return output
-    
 # Enhanced model training function with gradient accumulation for larger models
 def train_hierarchical_model(train_dataloader, val_dataloader, model, device, 
                            epochs=5, lr=2e-5, accumulation_steps=2):
@@ -1227,24 +1077,11 @@ def analyze_economics_feature_importance(model, feature_names):
     
     return importance_df, category_df
 
-# Add a utility function to monitor memory usage
-def print_memory_usage():
-    # Get CPU memory info
-    process = psutil.Process(os.getpid())
-    mem_info = process.memory_info()
-    mem_mb = mem_info.rss / 1024 / 1024  # Convert to MB
-    
-    print(f"CPU Memory Usage: {mem_mb:.2f} MB")
-    
-    # Force garbage collection
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
 def main():
-    # Force CPU usage regardless of CUDA availability
-    device = torch.device('cpu')
-    print(f"Forcing CPU usage for all operations to avoid GPU memory issues")
+    # Set up device
+    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device="cpu"
+    print(f"Using device: {device}")
     
     # Feature names for the economics-specific extractor
     feature_names = [
@@ -1503,67 +1340,56 @@ def main():
         print(f"Error in data balancing process: {e}")
         print("Proceeding with original imbalanced data")
     
-    # Memory optimization - clear unnecessary variables
-    del papers_df, handcrafted_features, features_array, labels_array
-    
     # Setup tokenizer
     print("Setting up tokenizer...")
     try:
-        # Use SciBERT which is better for scientific papers - with CPU settings
-        model_name = 'allenai/scibert_scivocab_uncased'
-        print(f"Loading tokenizer: {model_name}")
-        tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+        # Use SciBERT which is better for scientific papers
+        tokenizer = AutoTokenizer.from_pretrained('allenai/scibert_scivocab_uncased')
     except Exception as e:
         print(f"Error loading tokenizer: {e}")
         print("Falling back to bert-base-uncased")
-        tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased', use_fast=True)
+        tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
     
-    # Reduce model complexity to save memory
-    print("Using reduced model complexity for CPU-only execution")
-    max_seq_length = 64   # Reduced from 128
-    max_sections = 2      # Reduced from 4
-    max_sents = 4         # Reduced from 8
-    
-    # Create hierarchical datasets with reduced complexity
+    # Create hierarchical datasets
     print("Creating hierarchical datasets...")
     train_dataset = HierarchicalResearchPaperDataset(
         train_texts, train_labels, tokenizer, train_features,
-        max_seq_length=max_seq_length,
-        max_sections=max_sections,
-        max_sents=max_sents
+        max_seq_length=128,  # Reduced for efficiency
+        max_sections=4,      # Focus on key sections
+        max_sents=8          # Focus on key sentences
     )
     
     val_dataset = HierarchicalResearchPaperDataset(
         val_texts, y_val, tokenizer, val_features,
-        max_seq_length=max_seq_length,
-        max_sections=max_sections,
-        max_sents=max_sents
+        max_seq_length=128,
+        max_sections=4,
+        max_sents=8
     )
     
     test_dataset = HierarchicalResearchPaperDataset(
         test_texts, y_test, tokenizer, test_features,
-        max_seq_length=max_seq_length,
-        max_sections=max_sections,
-        max_sents=max_sents
+        max_seq_length=128,
+        max_sections=4,
+        max_sents=8
     )
     
-    # Use very small batch size for CPU processing
-    batch_size = 1  # Minimum batch size
-    print(f"Using batch size: {batch_size} for CPU processing")
+    # Create data loaders with smaller batch size due to increased memory usage
+    batch_size = min(4, len(train_dataset)) if torch.cuda.is_available() else min(2, len(train_dataset))
+    if batch_size == 0:  # Handle empty datasets
+        batch_size = 1
+    print(f"Using batch size: {batch_size}")
     
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size)
     test_dataloader = DataLoader(test_dataset, batch_size=batch_size)
     
-    # Initialize hierarchical model - force CPU execution
-    print("Initializing hierarchical model for CPU execution...")
+    # Initialize hierarchical model
+    print("Initializing hierarchical model...")
     try:
-        print("Using CPU memory optimization settings")
         model = HierarchicalBiasPredictionModel(
             'allenai/scibert_scivocab_uncased', 
             num_classes=3,
-            feature_dim=len(feature_names),
-            dropout_rate=0.5  # Increased dropout rate for regularization
+            feature_dim=len(feature_names)
         )
     except Exception as e:
         print(f"Error loading SciBERT for hierarchical model: {e}")
@@ -1571,21 +1397,17 @@ def main():
         model = HierarchicalBiasPredictionModel(
             'bert-base-uncased', 
             num_classes=3,
-            feature_dim=len(feature_names),
-            dropout_rate=0.5
+            feature_dim=len(feature_names)
         )
-    
-    # Ensure model is on CPU
+        
     model.to(device)
-    print(f"Model is on device: {next(model.parameters()).device}")
     
-    # Train hierarchical model with memory optimization
+    # Train hierarchical model
     print("Training hierarchical model...")
     model = train_hierarchical_model(
         train_dataloader, val_dataloader, model, device, 
-        epochs=2,  # Further reduced epochs for CPU execution
-        accumulation_steps=4,  # Increased accumulation steps for CPU
-        lr=1e-5  # Lower learning rate for stability
+        epochs=3,  # Reduced epochs for faster execution
+        accumulation_steps=2  # Gradient accumulation for larger model
     )
     
     # Evaluate hierarchical model
@@ -1600,15 +1422,4 @@ def main():
     print("Done!")
 
 if __name__ == "__main__":
-    # Set the Python multiprocessing method to avoid issues on Windows
-    import multiprocessing
-    try:
-        multiprocessing.set_start_method('spawn')
-    except RuntimeError:
-        pass
-    
-    # Force CPU usage by setting environment variable
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""
-    
-    # Run the main function
     main()

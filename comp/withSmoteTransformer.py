@@ -594,152 +594,27 @@ class HierarchicalAttention(nn.Module):
         return torch.stack(section_embeddings)
 
 
-# Add memory optimization for forward pass in HierarchicalBiasPredictionModel
-def forward_with_memory_optimization(self, input_ids, attention_mask, handcrafted_features):
-    batch_size = input_ids.size(0)
-    
-    # Reshape for BERT processing
-    # Original shape: [batch_size, max_sections, max_sents, max_seq_length]
-    max_sections, max_sents, max_seq_length = input_ids.size(1), input_ids.size(2), input_ids.size(3)
-    
-    # Process each sentence with BERT
-    word_embeddings = []
-    for b in range(batch_size):
-        section_embeddings = []
-        for s in range(max_sections):
-            sentence_embeddings = []
-            for i in range(max_sents):
-                # Process single sentence through BERT
-                input_ids_sent = input_ids[b, s, i].unsqueeze(0)  # [1, max_seq_length]
-                attention_mask_sent = attention_mask[b, s, i].unsqueeze(0)  # [1, max_seq_length]
-                
-                # Skip processing empty sentences to save memory
-                if attention_mask_sent.sum() > 0:
-                    # Process with BERT but clear cache after each step
-                    with torch.no_grad():  # Use no_grad for inference parts
-                        outputs = self.bert(
-                            input_ids=input_ids_sent, 
-                            attention_mask=attention_mask_sent,
-                            output_hidden_states=True
-                        )
-                        
-                        # Get token embeddings from last layer
-                        token_embeddings = outputs.last_hidden_state.squeeze(0).detach()  # [max_seq_length, hidden_size]
-                        
-                        # Explicitly delete to free memory
-                        del outputs
-                else:
-                    # Create zero embeddings for empty sentences
-                    token_embeddings = torch.zeros(
-                        max_seq_length, self.bert_dim, device=input_ids.device)
-                
-                sentence_embeddings.append(token_embeddings)
-            
-            # Stack to get all sentence embeddings for this section
-            if sentence_embeddings:
-                section_embeddings.append(torch.stack(sentence_embeddings))
-            else:
-                # Create empty section if no sentences
-                empty_section = torch.zeros(
-                    max_sents, max_seq_length, self.bert_dim, device=input_ids.device)
-                section_embeddings.append(empty_section)
-        
-        # Stack to get all section embeddings for this document
-        if section_embeddings:
-            word_embeddings.append(torch.stack(section_embeddings))
-        else:
-            # Create empty document if no sections
-            empty_doc = torch.zeros(
-                max_sections, max_sents, max_seq_length, self.bert_dim, device=input_ids.device)
-            word_embeddings.append(empty_doc)
-    
-    # Stack to get embeddings for the entire batch
-    word_embeddings = torch.stack(word_embeddings)  # [batch_size, max_sections, max_sents, max_seq_length, hidden_dim]
-    
-    # Apply hierarchical attention
-    doc_embeddings = []
-    for b in range(batch_size):
-        doc_embedding = self.hierarchical_attention(
-            word_embeddings[b].unsqueeze(0),  # Add batch dimension
-            attention_mask[b].unsqueeze(0)
-        )
-        doc_embeddings.append(doc_embedding)
-    
-    # Free memory
-    del word_embeddings
-    
-    doc_embeddings = torch.cat(doc_embeddings, dim=0)
-    
-    # Feature fusion
-    fused_features = self.feature_fusion(doc_embeddings, handcrafted_features)
-    
-    # Free memory
-    del doc_embeddings
-    
-    # Final classification
-    x = self.fc1(fused_features)
-    x = self.relu(x)
-    x = self.layer_norm(x)
-    x = self.dropout(x)
-    output = self.fc2(x)
-    
-    return output
-
-
-# Modify the HierarchicalBiasPredictionModel class to use memory-optimized forward method
-class HierarchicalBiasPredictionModel(nn.Module):
-    def __init__(self, bert_model_name, num_classes=3, dropout_rate=0.3, feature_dim=20):
-        super(HierarchicalBiasPredictionModel, self).__init__()
-        
-        # Load BERT with low memory footprint config
-        config = AutoConfig.from_pretrained(bert_model_name)
-        
-        # Reduce model complexity for CPU
-        config.num_hidden_layers = 6  # Reduce from 12
-        config.hidden_size = 384  # Reduce from 768
-        config.intermediate_size = 1536  # Reduce from 3072
-        config.num_attention_heads = 6  # Reduce from 12
-        
-        print("Loading BERT with reduced complexity for CPU processing")
-        self.bert = AutoModel.from_pretrained(bert_model_name, config=config)
-        
-        self.dropout = nn.Dropout(dropout_rate)
-        
-        # Dimensions updated for smaller model
-        self.bert_dim = config.hidden_size
-        self.handcrafted_dim = feature_dim
-        self.fusion_dim = 128  # Reduced from 256
-        
-        # Hierarchical attention
-        self.hierarchical_attention = HierarchicalAttention(hidden_dim=self.bert_dim)
-        
-        # Feature fusion layer
-        self.feature_fusion = FeatureFusionLayer(
-            bert_dim=self.bert_dim, 
-            handcrafted_dim=self.handcrafted_dim,
-            fusion_dim=self.fusion_dim
-        )
-        
-        # Classification layers - simplified
-        self.fc1 = nn.Linear(self.fusion_dim, 64)  # Reduced from 128
-        self.fc2 = nn.Linear(64, num_classes)
-        self.relu = nn.ReLU()
-        self.layer_norm = nn.LayerNorm(64)  # Adjusted to match fc1 output
-        
-        # Use memory-optimized forward
-        self.forward = forward_with_memory_optimization.__get__(self)
+# Main HierarchicalBiasPredictionModel class for GPU execution
 
 
 class HierarchicalBiasPredictionModel(nn.Module):
     def __init__(self, bert_model_name, num_classes=3, dropout_rate=0.3, feature_dim=20):
         super(HierarchicalBiasPredictionModel, self).__init__()
         self.bert = AutoModel.from_pretrained(bert_model_name)
+        
+        # Enable gradient checkpointing to save memory with explicit reentrant setting
+        if hasattr(self.bert, 'gradient_checkpointing_enable'):
+            self.bert.gradient_checkpointing_enable()
+            # Set reentrant to False to avoid the warning
+            if hasattr(self.bert.config, 'use_reentrant'):
+                self.bert.config.use_reentrant = False
+        
         self.dropout = nn.Dropout(dropout_rate)
         
-        # Dimensions
+        # Dimensions optimized for 4GB GPU
         self.bert_dim = self.bert.config.hidden_size
         self.handcrafted_dim = feature_dim
-        self.fusion_dim = 256
+        self.fusion_dim = 256  # Balanced fusion dimension for learning
         
         # Hierarchical attention
         self.hierarchical_attention = HierarchicalAttention(hidden_dim=self.bert_dim)
@@ -751,8 +626,8 @@ class HierarchicalBiasPredictionModel(nn.Module):
             fusion_dim=self.fusion_dim
         )
         
-        # Classification layers
-        self.fc1 = nn.Linear(self.fusion_dim, 128)
+        # Classification layers - balanced for learning
+        self.fc1 = nn.Linear(self.fusion_dim, 128)  # Better capacity for learning
         self.fc2 = nn.Linear(128, num_classes)
         self.relu = nn.ReLU()
         self.layer_norm = nn.LayerNorm(128)
@@ -824,49 +699,121 @@ class HierarchicalBiasPredictionModel(nn.Module):
         
         return output
     
-# Enhanced model training function with gradient accumulation for larger models
+# Enhanced model training function with gradient accumulation and mixed precision
 def train_hierarchical_model(train_dataloader, val_dataloader, model, device, 
                            epochs=5, lr=2e-5, accumulation_steps=2):
-    """Train the hierarchical model with gradient accumulation"""
+    """Train the hierarchical model with gradient accumulation and mixed precision"""
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs * len(train_dataloader))
     loss_fn = nn.CrossEntropyLoss()
+    
+    # Enable mixed precision training for GPU
+    use_amp = device.type == 'cuda'
+    scaler = torch.cuda.amp.GradScaler() if use_amp else None
+    if use_amp:
+        print("Using mixed precision training for GPU acceleration")
     
     best_val_accuracy = 0
     best_model = None
     
     for epoch in range(epochs):
+        print(f"\nStarting epoch {epoch+1}/{epochs}...")
         # Training
         model.train()
         train_loss = 0
         optimizer.zero_grad()  # Zero gradients at the beginning of epoch
         
+        print(f"Processing {len(train_dataloader)} training batches...")
+        
         for batch_idx, batch in enumerate(train_dataloader):
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
-            handcrafted_features = batch['handcrafted_features'].to(device)
-            labels = batch['label'].to(device)
+            # Print progress every 10 batches
+            if batch_idx % 10 == 0:
+                print(f"  Processing batch {batch_idx+1}/{len(train_dataloader)}...")
             
-            outputs = model(input_ids, attention_mask, handcrafted_features)
-            loss = loss_fn(outputs, labels)
-            loss = loss / accumulation_steps  # Normalize loss
+            # Clear cache before processing each batch for 4GB GPU
+            if device.type == 'cuda' and batch_idx % 5 == 0:  # Clear every 5 batches
+                clear_gpu_cache(f"Batch {batch_idx}")
             
-            loss.backward()
-            train_loss += loss.item() * accumulation_steps  # Re-scale for logging
+            try:
+                input_ids = batch['input_ids'].to(device)
+                attention_mask = batch['attention_mask'].to(device)
+                handcrafted_features = batch['handcrafted_features'].to(device)
+                labels = batch['label'].to(device)
+                
+                # Debug: Print tensor shapes
+                if batch_idx == 0:
+                    print(f"    Input shapes: input_ids={input_ids.shape}, attention_mask={attention_mask.shape}")
+                    print(f"    Features shape: {handcrafted_features.shape}, Labels shape: {labels.shape}")
+            except Exception as e:
+                print(f"Error loading batch {batch_idx}: {e}")
+                continue
             
-            # Accumulate gradients and update at intervals
-            if (batch_idx + 1) % accumulation_steps == 0:
-                optimizer.step()
-                scheduler.step()
-                optimizer.zero_grad()
+            # Mixed precision forward pass
+            if use_amp:
+                try:
+                    with torch.cuda.amp.autocast():
+                        if batch_idx == 0:
+                            print(f"    Running forward pass...")
+                        outputs = model(input_ids, attention_mask, handcrafted_features)
+                        if batch_idx == 0:
+                            print(f"    Forward pass completed, output shape: {outputs.shape}")
+                        loss = loss_fn(outputs, labels)
+                        loss = loss / accumulation_steps  # Normalize loss
+                except Exception as e:
+                    print(f"Error in forward pass (batch {batch_idx}): {e}")
+                    if device.type == 'cuda':
+                        torch.cuda.empty_cache()
+                    continue
+                
+                scaler.scale(loss).backward()
+                train_loss += loss.item() * accumulation_steps  # Re-scale for logging
+                
+                # Accumulate gradients and update at intervals
+                if (batch_idx + 1) % accumulation_steps == 0:
+                    scaler.step(optimizer)
+                    scaler.update()
+                    scheduler.step()
+                    optimizer.zero_grad()
+                    # Clear cache after optimizer step for 4GB GPU
+                    if device.type == 'cuda':
+                        clear_gpu_cache("After Optimizer Step")
+            else:
+                try:
+                    if batch_idx == 0:
+                        print(f"    Running forward pass (CPU mode)...")
+                    outputs = model(input_ids, attention_mask, handcrafted_features)
+                    if batch_idx == 0:
+                        print(f"    Forward pass completed, output shape: {outputs.shape}")
+                    loss = loss_fn(outputs, labels)
+                    loss = loss / accumulation_steps  # Normalize loss
+                except Exception as e:
+                    print(f"Error in forward pass (batch {batch_idx}): {e}")
+                    continue
+                
+                loss.backward()
+                train_loss += loss.item() * accumulation_steps  # Re-scale for logging
+                
+                # Accumulate gradients and update at intervals
+                if (batch_idx + 1) % accumulation_steps == 0:
+                    optimizer.step()
+                    scheduler.step()
+                    optimizer.zero_grad()
+                    # Clear cache after optimizer step for 4GB GPU
+                    if device.type == 'cuda':
+                        clear_gpu_cache("After Optimizer Step")
         
         # Handle any remaining gradients at the end of epoch
         if len(train_dataloader) % accumulation_steps != 0:
-            optimizer.step()
+            if use_amp:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
             scheduler.step()
         
         train_loss /= len(train_dataloader)
         
+        print(f"\nStarting validation for epoch {epoch+1}...")
         # Validation
         model.eval()
         val_loss = 0
@@ -874,14 +821,28 @@ def train_hierarchical_model(train_dataloader, val_dataloader, model, device,
         total = 0
         
         with torch.no_grad():
-            for batch in val_dataloader:
-                input_ids = batch['input_ids'].to(device)
-                attention_mask = batch['attention_mask'].to(device)
-                handcrafted_features = batch['handcrafted_features'].to(device)
-                labels = batch['label'].to(device)
+            for val_batch_idx, batch in enumerate(val_dataloader):
+                # Clear cache before validation batch for 4GB GPU
+                if device.type == 'cuda' and val_batch_idx % 10 == 0:  # Clear every 10 validation batches
+                    clear_gpu_cache(f"Validation Batch {val_batch_idx}")
                 
-                outputs = model(input_ids, attention_mask, handcrafted_features)
-                loss = loss_fn(outputs, labels)
+                try:
+                    input_ids = batch['input_ids'].to(device)
+                    attention_mask = batch['attention_mask'].to(device)
+                    handcrafted_features = batch['handcrafted_features'].to(device)
+                    labels = batch['label'].to(device)
+                except Exception as e:
+                    print(f"Error loading validation batch {val_batch_idx}: {e}")
+                    continue
+                
+                try:
+                    outputs = model(input_ids, attention_mask, handcrafted_features)
+                    loss = loss_fn(outputs, labels)
+                except Exception as e:
+                    print(f"Error in validation forward pass (batch {val_batch_idx}): {e}")
+                    if device.type == 'cuda':
+                        torch.cuda.empty_cache()
+                    continue
                 
                 val_loss += loss.item()
                 
@@ -1051,23 +1012,49 @@ def load_papers_from_json(json_file_path):
                 # Extract text and label
                 text = paper.get('Body', paper.get('text', paper.get('content', paper.get('abstract', ''))))
                 
-                # Extract label - could be under different keys
-                label = paper.get('OverallBias', paper.get('bias_label', paper.get('bias_type', 
-                                  paper.get('Cognitive Bias', paper.get('Publication Bias', 
-                                  paper.get('No Bias', 0))))))
+                # Extract label - use 'Overall Bias' (with space, as in CS data)
+                label = paper.get('Overall Bias', paper.get('OverallBias', paper.get('bias_label', 
+                                  paper.get('bias_type', None))))
+                
+                # Skip papers with missing or empty bias labels (but not numeric 0 which is valid)
+                if label is None or label == "":
+                    print(f"Warning: Skipping paper at index {i} - missing or empty bias label")
+                    continue
                 
                 # Convert string labels to integers if needed
                 if isinstance(label, str):
-                    label_map = {
-                        'no_bias': 0, 'none': 0, 'no bias': 0, 'nobias': 0,
-                        'cognitive_bias': 1, 'cognitive': 1, 'cognitive bias': 1, 'cognitivebias': 1,
-                        'publication_bias': 2, 'publication': 2, 'publication bias': 2, 'publicationbias': 2
-                    }
-                    label = label_map.get(label.strip().lower(), 0)
+                    # Handle exact matches first (CS data format)
+                    if label == 'No Bias':
+                        label = 0
+                    elif label == 'Cognitive Bias':
+                        label = 1
+                    elif label == 'Publication Bias':
+                        label = 2
+                    else:
+                        # Fallback to case-insensitive mapping
+                        label_map = {
+                            'no_bias': 0, 'none': 0, 'no bias': 0, 'nobias': 0,
+                            'cognitive_bias': 1, 'cognitive': 1, 'cognitive bias': 1, 'cognitivebias': 1,
+                            'publication_bias': 2, 'publication': 2, 'publication bias': 2, 'publicationbias': 2
+                        }
+                        mapped_label = label_map.get(label.strip().lower(), None)
+                        if mapped_label is None:
+                            print(f"Warning: Skipping paper at index {i} - unknown bias label '{label}'")
+                            continue
+                        label = mapped_label
                 
                 # If label is float (like in sample data), convert to int
-                if isinstance(label, float):
-                    label = int(label)
+                elif isinstance(label, float):
+                    if label in [0.0, 1.0, 2.0]:
+                        label = int(label)
+                    else:
+                        print(f"Warning: Skipping paper at index {i} - invalid float label '{label}'")
+                        continue
+                
+                # Skip papers with empty text
+                if not text or text.strip() == "":
+                    print(f"Warning: Skipping paper at index {i} - empty text content")
+                    continue
                 
                 papers.append({'text': text, 'label': label})
                 
@@ -1155,13 +1142,24 @@ def load_papers_from_json(json_file_path):
         if len(df) < original_count:
             print(f"Info: Removed {original_count - len(df)} rows with empty text")
         
-        # Validate label values
-        if not all(df['label'].isin([0, 1, 2])):
-            invalid_labels = df[~df['label'].isin([0, 1, 2])]['label'].unique()
-            print(f"Warning: Found invalid label values: {invalid_labels}. Converting to 0.")
-            df.loc[~df['label'].isin([0, 1, 2]), 'label'] = 0
+        # Validate label values - should only be 0, 1, 2 at this point
+        invalid_labels = df[~df['label'].isin([0, 1, 2])]
+        if len(invalid_labels) > 0:
+            print(f"Error: Found {len(invalid_labels)} papers with invalid labels after filtering:")
+            for idx, row in invalid_labels.iterrows():
+                print(f"  Index {idx}: label = {row['label']}")
+            # Remove invalid entries rather than converting
+            df = df[df['label'].isin([0, 1, 2])].reset_index(drop=True)
+            print(f"Removed {len(invalid_labels)} invalid entries")
         
+        # Final summary
+        final_counts = df['label'].value_counts().sort_index()
         print(f"Successfully loaded {len(df)} papers from {json_file_path}")
+        print(f"Final label distribution:")
+        for label_num, count in final_counts.items():
+            label_names = {0: 'No Bias', 1: 'Cognitive Bias', 2: 'Publication Bias'}
+            print(f"  {label_names[label_num]} ({label_num}): {count} papers")
+        
         return df
         
     except json.JSONDecodeError as e:
@@ -1232,23 +1230,87 @@ def analyze_cs_feature_importance(model, feature_names):
     return importance_df, category_df
 
 # Add a utility function to monitor memory usage
-def print_memory_usage():
+def print_memory_usage(stage=""):
     # Get CPU memory info
     process = psutil.Process(os.getpid())
     mem_info = process.memory_info()
     mem_mb = mem_info.rss / 1024 / 1024  # Convert to MB
     
-    print(f"CPU Memory Usage: {mem_mb:.2f} MB")
+    stage_prefix = f"[{stage}] " if stage else ""
+    print(f"{stage_prefix}CPU Memory Usage: {mem_mb:.2f} MB")
+    
+    # GPU memory info if available
+    if torch.cuda.is_available():
+        gpu_memory = torch.cuda.memory_allocated() / 1024 / 1024  # Convert to MB
+        gpu_memory_cached = torch.cuda.memory_reserved() / 1024 / 1024
+        gpu_memory_peak = torch.cuda.max_memory_allocated() / 1024 / 1024
+        total_gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024 / 1024
+        
+        print(f"{stage_prefix}GPU Memory Allocated: {gpu_memory:.2f} MB")
+        print(f"{stage_prefix}GPU Memory Reserved: {gpu_memory_cached:.2f} MB")
+        print(f"{stage_prefix}GPU Memory Peak: {gpu_memory_peak:.2f} MB")
+        print(f"{stage_prefix}GPU Memory Usage: {(gpu_memory_cached/total_gpu_memory)*100:.1f}% of {total_gpu_memory:.0f} MB")
     
     # Force garbage collection
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
+def clear_gpu_cache(stage=""):
+    """Comprehensive GPU cache clearing with status reporting"""
+    if torch.cuda.is_available():
+        stage_prefix = f"[{stage}] " if stage else ""
+        print(f"{stage_prefix}Clearing GPU cache...")
+        
+        # Get memory before clearing
+        before_allocated = torch.cuda.memory_allocated() / 1024 / 1024
+        before_reserved = torch.cuda.memory_reserved() / 1024 / 1024
+        
+        # Clear cache
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        gc.collect()
+        
+        # Get memory after clearing
+        after_allocated = torch.cuda.memory_allocated() / 1024 / 1024
+        after_reserved = torch.cuda.memory_reserved() / 1024 / 1024
+        
+        freed_allocated = before_allocated - after_allocated
+        freed_reserved = before_reserved - after_reserved
+        
+        if freed_allocated > 0 or freed_reserved > 0:
+            print(f"{stage_prefix}Freed {freed_allocated:.1f} MB allocated, {freed_reserved:.1f} MB reserved")
+        else:
+            print(f"{stage_prefix}Cache already clean")
+
 def main():
-    # Force CPU usage regardless of CUDA availability
-    device = torch.device('cpu')
-    print(f"Forcing CPU usage for all operations to avoid GPU memory issues")
+    # Clear GPU cache at startup for clean memory state
+    if torch.cuda.is_available():
+        print("Clearing GPU cache from previous runs...")
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        # Force garbage collection
+        gc.collect()
+        print("GPU cache cleared successfully!")
+    
+    # Configure CUDA memory management for 4GB GPU
+    if torch.cuda.is_available():
+        # Set memory fraction to avoid fragmentation
+        torch.cuda.set_per_process_memory_fraction(0.8)  # Use 80% of GPU memory
+        # Clear any existing cache again after configuration
+        torch.cuda.empty_cache()
+        # Set memory allocation configuration
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
+    
+    # Use GPU if available, otherwise CPU
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+    if torch.cuda.is_available():
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        total_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        print(f"GPU Memory: {total_memory:.1f} GB")
+        if total_memory < 6.0:  # Less than 6GB
+            print("WARNING: Low GPU memory detected. Using memory-optimized settings.")
     
     # Feature names for the computer science-specific extractor
     feature_names = [
@@ -1300,51 +1362,72 @@ def main():
     features_array = np.array(handcrafted_features, dtype=np.float32)
     labels_array = np.array(papers_df['label'], dtype=np.int64)
     
-    # Get indices for each class
+    print(f"\nTotal papers loaded from cs_train.json: {len(papers_df)}")
+    print(f"Class distribution in cs_train.json:")
+    for i, count in enumerate(papers_df['label'].value_counts().sort_index()):
+        class_names = ['No Bias', 'Cognitive Bias', 'Publication Bias']
+        print(f"  {class_names[i]}: {count} papers ({count/len(papers_df)*100:.1f}%)")
+    
+    # ⚠️ CRITICAL CHECK: Verify we have balanced classes
+    unique_labels = papers_df['label'].unique()
+    print(f"Unique labels found: {sorted(unique_labels)}")
+    if len(unique_labels) == 1:
+        print("🚨 CRITICAL ISSUE: All labels are the same! Model will only learn one class.")
+        print("This explains the 57% accuracy issue.")
+    elif len(unique_labels) < 3:
+        print(f"⚠️ WARNING: Only {len(unique_labels)} classes found. Missing some bias types.")
+    else:
+        print("✅ Good: All 3 classes present.")
+    
+    # Use entire cs_train.json for training and validation only
+    # Split into training (80%) and validation (20%) sets
+    
+    # Get indices for each class for stratified splitting
     class_indices = {}
     for class_label in np.unique(labels_array):
         class_indices[class_label] = np.where(labels_array == class_label)[0]
     
-    # Create test set with ~20% of data, ensuring at least one sample per class if available
-    test_indices = []
+    # Create stratified train/validation split (80/20)
+    train_indices = []
+    val_indices = []
+    
     for class_label, indices in class_indices.items():
-        # If a class has only 1 member, we'll put it in the training set
-        if len(indices) > 1:
-            # Take ~20% of samples from this class for testing
-            n_test = max(1, int(0.2 * len(indices)))
-            test_indices.extend(np.random.choice(indices, n_test, replace=False))
+        np.random.shuffle(indices)  # Randomize order
+        
+        # Calculate split point (80% for training, 20% for validation)
+        n_train = int(0.8 * len(indices))
+        n_train = max(1, n_train)  # Ensure at least 1 sample for training
+        
+        # If class has only 1 sample, put it in training
+        if len(indices) == 1:
+            train_indices.extend(indices)
+        else:
+            train_indices.extend(indices[:n_train])
+            val_indices.extend(indices[n_train:])
     
-    # Get remaining indices for training/validation
-    all_indices = set(range(len(labels_array)))
-    train_val_indices = list(all_indices - set(test_indices))
+    # Shuffle the final indices
+    np.random.shuffle(train_indices)
+    np.random.shuffle(val_indices)
     
-    # Split train_val into train and validation (80/20 split)
-    n_val = max(1, int(0.2 * len(train_val_indices)))
-    val_indices = np.random.choice(train_val_indices, n_val, replace=False)
-    train_indices = list(set(train_val_indices) - set(val_indices))
-    
-    # Create train, validation, and test sets
+    # Create train and validation sets (no test set - using separate cs_test.json)
     X_train = [(papers_df['text'].iloc[i], features_array[i]) for i in train_indices]
     y_train = labels_array[train_indices]
     
     X_val = [(papers_df['text'].iloc[i], features_array[i]) for i in val_indices]
     y_val = labels_array[val_indices]
     
-    X_test = [(papers_df['text'].iloc[i], features_array[i]) for i in test_indices]
-    y_test = labels_array[test_indices]
-    
     # Separate text and features
     train_texts, train_features = zip(*X_train) if X_train else ([], [])
     val_texts, val_features = zip(*X_val) if X_val else ([], [])
-    test_texts, test_features = zip(*X_test) if X_test else ([], [])
     
     # Convert to numpy arrays for SMOTE
     train_features = np.array(train_features)
     train_labels = np.array(y_train)
     
-    print(f"Training set size: {len(train_texts)}")
-    print(f"Validation set size: {len(val_texts)}")
-    print(f"Test set size: {len(test_texts)}")
+    print(f"Using entire cs_train.json for model training:")
+    print(f"Training set size: {len(train_texts)} ({len(train_texts)/len(papers_df)*100:.1f}% of total)")
+    print(f"Validation set size: {len(val_texts)} ({len(val_texts)/len(papers_df)*100:.1f}% of total)")
+    print(f"Total papers used: {len(train_texts) + len(val_texts)} (100% of cs_train.json)")
     
     # Apply SMOTE to the training data - keep original SMOTE implementation intact
     print("Applying SMOTE to balance classes...")
@@ -1522,11 +1605,18 @@ def main():
         print("Falling back to bert-base-uncased")
         tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased', use_fast=True)
     
-    # Reduce model complexity to save memory
-    print("Using reduced model complexity for CPU-only execution")
-    max_seq_length = 64   # Reduced from 128
-    max_sections = 2      # Reduced from 4
-    max_sents = 4         # Reduced from 8
+    # Use balanced model complexity for 4GB GPU - not too aggressive
+    if device.type == 'cuda':
+        print("Using balanced model complexity for 4GB GPU")
+        max_seq_length = 128  # Reasonable sequence length for learning
+        max_sections = 3      # Reasonable sections for learning
+        max_sents = 6         # Reasonable sentences for learning
+        print(f"GPU settings: seq_len={max_seq_length}, sections={max_sections}, sents={max_sents}")
+    else:
+        print("Using reduced model complexity for CPU execution")
+        max_seq_length = 128  # Better than 64 for learning
+        max_sections = 3      # Better than 2 for learning
+        max_sents = 6         # Better than 4 for learning
     
     # Create hierarchical datasets with reduced complexity
     print("Creating hierarchical datasets...")
@@ -1538,36 +1628,35 @@ def main():
     )
     
     val_dataset = HierarchicalResearchPaperDataset(
-        val_texts, y_val, tokenizer, val_features,
+        val_texts, y_val, tokenizer, np.array(val_features),
         max_seq_length=max_seq_length,
         max_sections=max_sections,
         max_sents=max_sents
     )
     
-    test_dataset = HierarchicalResearchPaperDataset(
-        test_texts, y_test, tokenizer, test_features,
-        max_seq_length=max_seq_length,
-        max_sections=max_sections,
-        max_sents=max_sents
-    )
+    # No test dataset - using separate cs_test.json for testing
     
-    # Use very small batch size for CPU processing
-    batch_size = 1  # Minimum batch size
-    print(f"Using batch size: {batch_size} for CPU processing")
+    # Use memory-optimized batch size for 4GB GPU
+    if device.type == 'cuda':
+        batch_size = 1  # Very small batch size for 4GB GPU
+        print(f"Using batch size: {batch_size} for 4GB GPU (memory optimized)")
+    else:
+        batch_size = 2  # Smaller batch size for CPU
+        print(f"Using batch size: {batch_size} for CPU processing")
     
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size)
-    test_dataloader = DataLoader(test_dataset, batch_size=batch_size)
+    # No test dataloader - using separate testing script
     
     # Initialize hierarchical model - force CPU execution
     print("Initializing hierarchical model for CPU execution...")
     try:
-        print("Using CPU memory optimization settings")
+        print("Loading full hierarchical model")
         model = HierarchicalBiasPredictionModel(
             'allenai/scibert_scivocab_uncased', 
             num_classes=3,
             feature_dim=len(feature_names),
-            dropout_rate=0.5  # Increased dropout rate for regularization
+            dropout_rate=0.3  # Standard dropout rate
         )
     except Exception as e:
         print(f"Error loading SciBERT for hierarchical model: {e}")
@@ -1576,32 +1665,129 @@ def main():
             'bert-base-uncased', 
             num_classes=3,
             feature_dim=len(feature_names),
-            dropout_rate=0.5
+            dropout_rate=0.3
         )
     
-    # Ensure model is on CPU
+    # Move model to device (GPU or CPU)
     model.to(device)
     print(f"Model is on device: {next(model.parameters()).device}")
     
-    # Train hierarchical model with memory optimization
+    # Print memory usage after model loading
+    print_memory_usage("After Model Loading")
+    
+    # Test a single forward pass to check memory
+    if len(train_dataloader) > 0:
+        print("\nTesting single forward pass...")
+        model.eval()
+        with torch.no_grad():
+            try:
+                test_batch = next(iter(train_dataloader))
+                test_input_ids = test_batch['input_ids'].to(device)
+                test_attention_mask = test_batch['attention_mask'].to(device)
+                test_handcrafted_features = test_batch['handcrafted_features'].to(device)
+                
+                print(f"Test batch shapes: {test_input_ids.shape}, {test_attention_mask.shape}")
+                
+                # Try forward pass
+                test_outputs = model(test_input_ids, test_attention_mask, test_handcrafted_features)
+                print(f"Test forward pass successful! Output shape: {test_outputs.shape}")
+                
+                # Clear test tensors
+                del test_batch, test_input_ids, test_attention_mask, test_handcrafted_features, test_outputs
+                if device.type == 'cuda':
+                    torch.cuda.empty_cache()
+                    
+            except Exception as e:
+                print(f"ERROR in test forward pass: {e}")
+                print("Model may be too large for available memory!")
+                if device.type == 'cuda':
+                    torch.cuda.empty_cache()
+        
+        model.train()  # Back to training mode
+    
+    # Additional memory optimization for 4GB GPU
+    if device.type == 'cuda':
+        # Set memory growth to avoid pre-allocation
+        torch.backends.cudnn.benchmark = False  # Disable for memory consistency
+        torch.backends.cudnn.deterministic = True  # Enable for reproducibility
+        print(f"Available GPU memory: {torch.cuda.memory_reserved(0) / 1024**2:.1f} MB")
+    
+    # Train hierarchical model
     print("Training hierarchical model...")
-    model = train_hierarchical_model(
-        train_dataloader, val_dataloader, model, device, 
-        epochs=2,  # Further reduced epochs for CPU execution
-        accumulation_steps=4,  # Increased accumulation steps for CPU
-        lr=1e-5  # Lower learning rate for stability
-    )
+    try:
+        if device.type == 'cuda':
+            # GPU training parameters (optimized for 4GB GPU)
+            print("Attempting GPU training with memory optimization...")
+            model = train_hierarchical_model(
+                train_dataloader, val_dataloader, model, device, 
+                epochs=5,  # More epochs for better learning
+                accumulation_steps=4,  # Balanced accumulation steps
+                lr=2e-5  # Better learning rate
+            )
+        else:
+            # CPU training parameters (fallback)
+            print("Using CPU training...")
+            model = train_hierarchical_model(
+                train_dataloader, val_dataloader, model, device, 
+                epochs=5,  # More epochs for better learning
+                accumulation_steps=4,  # Balanced accumulation for CPU
+                lr=2e-5  # Better learning rate for CPU
+            )
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            print(f"\n{'='*50}")
+            print("GPU OUT OF MEMORY ERROR DETECTED!")
+            print(f"{'='*50}")
+            print("Falling back to CPU training...")
+            
+            # Clear GPU memory
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+                del model
+                torch.cuda.empty_cache()
+            
+            # Switch to CPU
+            device = torch.device('cpu')
+            
+            # Recreate model on CPU
+            try:
+                model = HierarchicalBiasPredictionModel(
+                    'allenai/scibert_scivocab_uncased', 
+                    num_classes=3,
+                    feature_dim=len(feature_names),
+                    dropout_rate=0.3
+                )
+            except:
+                model = HierarchicalBiasPredictionModel(
+                    'bert-base-uncased', 
+                    num_classes=3,
+                    feature_dim=len(feature_names),
+                    dropout_rate=0.3
+                )
+            
+            model.to(device)
+            print(f"Model moved to CPU. Retrying training...")
+            
+            # Retry training on CPU
+            model = train_hierarchical_model(
+                train_dataloader, val_dataloader, model, device, 
+                epochs=2,  # Even fewer epochs for CPU fallback
+                accumulation_steps=2,  # Smaller accumulation for CPU
+                lr=1e-5
+            )
+        else:
+            raise e  # Re-raise if it's not a memory error
     
-    # Evaluate hierarchical model
-    print("Evaluating hierarchical model...")
-    label_names = ['No Bias', 'Cognitive Bias', 'Publication Bias']
-    evaluate_hierarchical_model(test_dataloader, model, device, label_names, feature_names)
-    
-    # Analyze computer science-specific feature importance
-    print("Analyzing computer science-specific feature importance...")
-    analyze_cs_feature_importance(model, feature_names)
-    
-    print("Done!")
+    # Model training completed - saved as 'best_hierarchical_model.pt'
+    print("\n" + "="*50)
+    print("MODEL TRAINING COMPLETED SUCCESSFULLY!")
+    print("="*50)
+    print(f"Best model saved as: 'best_hierarchical_model.pt'")
+    print(f"Model trained on {len(train_texts) + len(val_texts)} papers from cs_train.json")
+    print(f"Training papers: {len(train_texts)}")
+    print(f"Validation papers: {len(val_texts)}")
+    print("\nUse your separate testing script with cs_test.json to evaluate the model.")
+    print("="*50)
 
 if __name__ == "__main__":
     # Set the Python multiprocessing method to avoid issues on Windows
@@ -1611,8 +1797,32 @@ if __name__ == "__main__":
     except RuntimeError:
         pass
     
-    # Force CPU usage by setting environment variable
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    # Initial GPU cleanup before any operations
+    print("=" * 60)
+    print("STARTING HIERARCHICAL BIAS PREDICTION MODEL TRAINING")
+    print("=" * 60)
+    
+    if torch.cuda.is_available():
+        print("Performing initial GPU cleanup...")
+        # Reset all GPU memory
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.synchronize()  # Wait for all operations to complete
+        
+        # Set environment variables for memory optimization
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128,roundup_power2_divisions:16'
+        
+        # Force garbage collection
+        gc.collect()
+        
+        # Show initial GPU memory state
+        print(f"Initial GPU memory allocated: {torch.cuda.memory_allocated() / 1024**2:.1f} MB")
+        print(f"Initial GPU memory reserved: {torch.cuda.memory_reserved() / 1024**2:.1f} MB")
+        print("GPU cleanup completed!")
+    else:
+        print("No GPU detected - will use CPU training")
+    
+    print("\nStarting main training process...\n")
     
     # Run the main function
     main()
