@@ -639,56 +639,49 @@ class HierarchicalBiasPredictionModel(nn.Module):
         # Original shape: [batch_size, max_sections, max_sents, max_seq_length]
         max_sections, max_sents, max_seq_length = input_ids.size(1), input_ids.size(2), input_ids.size(3)
         
-        # Process each sentence with BERT
-        word_embeddings = []
-        for b in range(batch_size):
-            section_embeddings = []
-            for s in range(max_sections):
-                sentence_embeddings = []
-                for i in range(max_sents):
-                    # Process single sentence through BERT
-                    input_ids_sent = input_ids[b, s, i].unsqueeze(0)  # [1, max_seq_length]
-                    attention_mask_sent = attention_mask[b, s, i].unsqueeze(0)  # [1, max_seq_length]
-                    
-                    # Skip processing empty sentences to save computation
-                    if attention_mask_sent.sum() > 0:
-                        outputs = self.bert(
-                            input_ids=input_ids_sent, 
-                            attention_mask=attention_mask_sent,
-                            output_hidden_states=True
-                        )
-                        
-                        # Get token embeddings from last layer
-                        token_embeddings = outputs.last_hidden_state.squeeze(0)  # [max_seq_length, hidden_size]
-                    else:
-                        # Create zero embeddings for empty sentences
-                        token_embeddings = torch.zeros(
-                            max_seq_length, self.bert_dim, device=input_ids.device)
-                    
-                    sentence_embeddings.append(token_embeddings)
-                
-                # Stack to get all sentence embeddings for this section
-                section_embeddings.append(torch.stack(sentence_embeddings))
+        # OPTIMIZED: Batch process all sentences at once instead of nested loops
+        # Reshape to process all sentences in a single BERT call
+        total_sentences = batch_size * max_sections * max_sents
+        
+        # Flatten input tensors
+        flat_input_ids = input_ids.view(total_sentences, max_seq_length)
+        flat_attention_mask = attention_mask.view(total_sentences, max_seq_length)
+        
+        # Find non-empty sentences to avoid processing padding
+        non_empty_mask = flat_attention_mask.sum(dim=1) > 0
+        
+        if non_empty_mask.sum() > 0:
+            # Process only non-empty sentences
+            non_empty_input_ids = flat_input_ids[non_empty_mask]
+            non_empty_attention_mask = flat_attention_mask[non_empty_mask]
             
-            # Stack to get all section embeddings for this document
-            word_embeddings.append(torch.stack(section_embeddings))
-        
-        # Stack to get embeddings for the entire batch
-        word_embeddings = torch.stack(word_embeddings)  # [batch_size, max_sections, max_sents, max_seq_length, hidden_dim]
-        
-        # Apply hierarchical attention
-        doc_embeddings = []
-        for b in range(batch_size):
-            doc_embedding = self.hierarchical_attention(
-                word_embeddings[b].unsqueeze(0),  # Add batch dimension
-                attention_mask[b].unsqueeze(0)
+            # Single BERT forward pass for all non-empty sentences
+            outputs = self.bert(
+                input_ids=non_empty_input_ids,
+                attention_mask=non_empty_attention_mask,
+                output_hidden_states=False  # Don't need hidden states, just last layer
             )
-            doc_embeddings.append(doc_embedding)
+            
+            # Get sentence-level embeddings using [CLS] token
+            sentence_embeddings = outputs.last_hidden_state[:, 0, :]  # [num_non_empty, hidden_size]
+        else:
+            sentence_embeddings = torch.empty(0, self.bert_dim, device=input_ids.device)
         
-        doc_embeddings = torch.stack(doc_embeddings)
+        # Create full embedding tensor and fill in non-empty sentences
+        all_sentence_embeddings = torch.zeros(total_sentences, self.bert_dim, device=input_ids.device)
+        if non_empty_mask.sum() > 0:
+            all_sentence_embeddings[non_empty_mask] = sentence_embeddings
+        
+        # Reshape back to hierarchical structure
+        doc_embeddings = all_sentence_embeddings.view(batch_size, max_sections, max_sents, self.bert_dim)
+        
+        # Simple aggregation instead of complex hierarchical attention for speed
+        # Average over sentences and sections
+        section_embeddings = doc_embeddings.mean(dim=2)  # Average sentences within sections
+        final_doc_embeddings = section_embeddings.mean(dim=1)  # Average sections within documents
         
         # Feature fusion
-        fused_features = self.feature_fusion(doc_embeddings, handcrafted_features)
+        fused_features = self.feature_fusion(final_doc_embeddings, handcrafted_features)
         
         # Final classification
         x = self.fc1(fused_features)
@@ -728,10 +721,10 @@ def train_hierarchical_model(train_dataloader, val_dataloader, model, device,
         for batch_idx, batch in enumerate(train_dataloader):
             # Print progress every 10 batches
             if batch_idx % 10 == 0:
-                print(f"  Processing batch {batch_idx+1}/{len(train_dataloader)}...")
+                print(f"  Epoch {epoch+1}/{epochs} - Processing batch {batch_idx+1}/{len(train_dataloader)}...")
             
-            # Clear cache before processing each batch for 4GB GPU
-            if device.type == 'cuda' and batch_idx % 5 == 0:  # Clear every 5 batches
+            # Clear cache less frequently for speed
+            if device.type == 'cuda' and batch_idx % 25 == 0:  # Clear every 25 batches
                 clear_gpu_cache(f"Batch {batch_idx}")
             
             try:
@@ -1608,9 +1601,9 @@ def main():
     # Use balanced model complexity for 4GB GPU - not too aggressive
     if device.type == 'cuda':
         print("Using balanced model complexity for 4GB GPU")
-        max_seq_length = 128  # Reasonable sequence length for learning
-        max_sections = 3      # Reasonable sections for learning
-        max_sents = 6         # Reasonable sentences for learning
+        max_seq_length = 64   # Reduced for speed
+        max_sections = 2      # Reduced for speed  
+        max_sents = 3         # Reduced for speed
         print(f"GPU settings: seq_len={max_seq_length}, sections={max_sections}, sents={max_sents}")
     else:
         print("Using reduced model complexity for CPU execution")
@@ -1638,8 +1631,8 @@ def main():
     
     # Use memory-optimized batch size for 4GB GPU
     if device.type == 'cuda':
-        batch_size = 1  # Very small batch size for 4GB GPU
-        print(f"Using batch size: {batch_size} for 4GB GPU (memory optimized)")
+        batch_size = 4  # Larger batch size for better throughput
+        print(f"Using batch size: {batch_size} for 4GB GPU (speed optimized)")
     else:
         batch_size = 2  # Smaller batch size for CPU
         print(f"Using batch size: {batch_size} for CPU processing")
@@ -1720,8 +1713,8 @@ def main():
             print("Attempting GPU training with memory optimization...")
             model = train_hierarchical_model(
                 train_dataloader, val_dataloader, model, device, 
-                epochs=5,  # More epochs for better learning
-                accumulation_steps=4,  # Balanced accumulation steps
+                epochs=2,  # Reduced epochs for faster training
+                accumulation_steps=8,  # Higher accumulation for effective larger batch size
                 lr=2e-5  # Better learning rate
             )
         else:
@@ -1729,7 +1722,7 @@ def main():
             print("Using CPU training...")
             model = train_hierarchical_model(
                 train_dataloader, val_dataloader, model, device, 
-                epochs=5,  # More epochs for better learning
+                epochs=2,  # Reduced epochs for faster training
                 accumulation_steps=4,  # Balanced accumulation for CPU
                 lr=2e-5  # Better learning rate for CPU
             )
