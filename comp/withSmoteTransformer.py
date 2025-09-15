@@ -499,7 +499,7 @@ class HierarchicalBiasPredictionModel(nn.Module):
     
 # Enhanced model training function with gradient accumulation and mixed precision
 def train_hierarchical_model(train_dataloader, val_dataloader, model, device, 
-                           epochs=5, lr=2e-5, accumulation_steps=2):
+                           epochs=2, lr=2e-5, accumulation_steps=4):
     """Train the hierarchical model with gradient accumulation and mixed precision"""
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs * len(train_dataloader))
@@ -1424,18 +1424,14 @@ def main():
             print("Attempting GPU training with memory optimization...")
             model = train_hierarchical_model(
                 train_dataloader, val_dataloader, model, device, 
-                epochs=2,  # Reduced epochs for faster training
-                accumulation_steps=8,  # Higher accumulation for effective larger batch size
-                lr=2e-5  # Better learning rate
+                accumulation_steps=8  # Higher accumulation for GPU efficiency (uses defaults: epochs=2, lr=2e-5)
             )
         else:
-            # CPU training parameters (fallback)
+            # CPU training parameters (using function defaults)
             print("Using CPU training...")
             model = train_hierarchical_model(
-                train_dataloader, val_dataloader, model, device, 
-                epochs=2,  # Reduced epochs for faster training
-                accumulation_steps=4,  # Balanced accumulation for CPU
-                lr=2e-5  # Better learning rate for CPU
+                train_dataloader, val_dataloader, model, device
+                # Uses defaults: epochs=2, accumulation_steps=4, lr=2e-5
             )
     except RuntimeError as e:
         if "out of memory" in str(e).lower():
@@ -1472,12 +1468,11 @@ def main():
             model.to(device)
             print(f"Model moved to CPU. Retrying training...")
             
-            # Retry training on CPU
+            # Retry training on CPU with minimal resource usage
             model = train_hierarchical_model(
                 train_dataloader, val_dataloader, model, device, 
-                epochs=2,  # Even fewer epochs for CPU fallback
-                accumulation_steps=2,  # Smaller accumulation for CPU
-                lr=1e-5
+                accumulation_steps=2,  # Minimal accumulation for memory-constrained CPU
+                lr=1e-5  # Lower learning rate for stability (uses default epochs=2)
             )
         else:
             raise e  # Re-raise if it's not a memory error
