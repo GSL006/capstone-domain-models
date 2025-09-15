@@ -161,280 +161,85 @@ class HierarchicalResearchPaperDataset(Dataset):
         
         return sections
 
-# Enhanced feature extractor for computer science papers
-class ComputerScienceBiasFeatureExtractor:
+# Dynamic feature extractor for academic papers (domain-agnostic)
+class DynamicAcademicFeatureExtractor:
     """Extract features that might indicate bias in computer science research papers"""
     
     def __init__(self):
-        # Basic patterns
+        # Basic statistical patterns (universal across domains)
         self.p_value_pattern = r'p\s*[<>=]\s*0\.0\d+'
         self.significance_stars = r'\*{1,3}\s*'
-        self.performance_pattern = r'(?:accuracy|precision|recall|f1|auc|rmse|mae)\s*[=:]\s*[-+]?[0-9]*\.?[0-9]+'
+        self.number_pattern = r'[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?'
         
-        # Computer science-specific hedge words
-        self.hedge_words = [
-            'may', 'might', 'could', 'possibly', 'potentially', 'suggests', 
-            'appears', 'seems', 'likely', 'unlikely', 'perhaps', 'arguably',
-            'tend to', 'tends to', 'tended to', 'indicate', 'indicates',
-            'approximately', 'roughly', 'around', 'about'
-        ]
+        # Dynamic sentiment patterns (will be populated from data)
+        self.hedge_pattern = r'\b(?:may|might|could|possibly|potentially|suggests|appears|seems|likely|unlikely|perhaps|arguably|tend|indicate|approximately|roughly|around|about)\b'
+        self.certainty_pattern = r'\b(?:clearly|obviously|certainly|definitely|undoubtedly|conclusively|absolutely|always|never|established|proves|demonstrates|robust|significant|substantial|optimal|best|superior|outperforms)\b'
+        self.claim_pattern = r'\b(?:performance|efficiency|accuracy|speed|improvement|enhancement|optimization|breakthrough|novel|innovative|cutting-edge|faster|better|superior)\b'
         
-        # Computer science-specific certainty words
-        self.certainty_words = [
-            'clearly', 'obviously', 'certainly', 'definitely', 'undoubtedly',
-            'conclusively', 'absolutely', 'always', 'never', 'established',
-            'proves', 'demonstrates', 'robust', 'significant', 'substantial',
-            'strong evidence', 'strongly supports', 'decisive', 'optimal',
-            'best', 'superior', 'outperforms', 'state-of-the-art'
-        ]
-        
-        # Computer science theory and method references
-        self.theory_terms = [
-            'machine learning', 'deep learning', 'neural network', 'algorithm',
-            'theoretical analysis', 'complexity analysis', 'big o', 'np-hard',
-            'polynomial time', 'exponential time', 'optimization', 'heuristic'
-        ]
-        
-        # Computer science-specific claim words
-        self.claim_terms = [
-            'performance', 'efficiency', 'accuracy', 'speed', 'scalability',
-            'improvement', 'enhancement', 'optimization', 'breakthrough',
-            'novel', 'innovative', 'cutting-edge', 'state-of-the-art',
-            'faster', 'better', 'superior', 'outperforms'
-        ]
-        
-        # Computer science jargon that might signal overconfidence
-        self.cs_jargon = [
-            'big data', 'artificial intelligence', 'machine learning', 'deep learning',
-            'neural networks', 'convolutional', 'recurrent', 'transformer',
-            'gradient descent', 'backpropagation', 'overfitting', 'underfitting',
-            'cross-validation', 'hyperparameter', 'feature engineering'
-        ]
-        
-        # Evaluation and validation terms
-        self.evaluation_terms = [
-            'evaluation', 'validation', 'testing', 'benchmark', 'baseline',
-            'comparison', 'ablation study', 'cross-validation', 'holdout',
-            'train-test split', 'k-fold', 'statistical significance'
-        ]
-        
-        # Computer science-specific method patterns
-        self.cs_method_patterns = [
-            r'CNN', r'RNN', r'LSTM', r'GRU', r'SVM', r'Random Forest',
-            r'Gradient Boosting', r'K-means', r'PCA', r't-SNE',
-            r'BERT', r'GPT', r'Transformer', r'ResNet', r'VGG'
-        ]
+        # Generic academic patterns
+        self.reference_pattern = r'\b(?:our|we|us|this)\s+(?:method|approach|algorithm|model|system|technique|framework|solution)\b'
+        self.comparison_pattern = r'\b(?:compared?\s+to|versus|vs\.?|outperforms?|better\s+than|superior\s+to)\b'
+        self.evaluation_pattern = r'\b(?:evaluat|validat|test|benchmark|baseline|comparison|study|analysis)\w*\b'
         
         # Stopwords for cleaning text
         self.stopwords = set(stopwords.words('english'))
         
     def extract_features(self, text):
-        features = {}
+        """Extract dynamic features from academic text without hardcoded domain assumptions"""
         
-        # Handle None or empty text
+        # Handle None or empty text  
         if text is None or not text:
-            # Return default values (20 features)
-            return [0] * 20
+            return [0] * 12  # Updated feature count
         
-        # Extract sections (abstract, introduction, methods, results, discussion, conclusion)
-        sections = self._extract_sections(text)
+        text_lower = text.lower()
+        words = text.split()
+        word_count = len(words) + 1  # Avoid division by zero
+        
+        features = {}
         
         # 1. Basic text statistics
         features['length'] = len(text)
-        word_count = len(text.split()) + 1  # Add 1 to avoid division by zero
-        features['avg_word_length'] = sum(len(w) for w in text.split()) / word_count
+        features['avg_word_length'] = sum(len(w) for w in words) / word_count
         
-        # 2. Statistical reporting patterns
+        # 2. Statistical reporting patterns (universal)
         features['p_value_count'] = len(re.findall(self.p_value_pattern, text))
-        features['signif_stars_count'] = len(re.findall(self.significance_stars, text))
-        features['performance_count'] = len(re.findall(self.performance_pattern, text))
+        features['significance_stars'] = len(re.findall(self.significance_stars, text))
+        features['numeric_density'] = len(re.findall(self.number_pattern, text)) / word_count * 1000
         
-        # 3. Linguistic features
-        # Hedging and certainty
-        hedge_count = sum(text.lower().count(word) for word in self.hedge_words)
-        certainty_count = sum(text.lower().count(word) for word in self.certainty_words)
-        features['hedge_ratio'] = hedge_count / word_count * 1000  # per 1000 words
-        features['certainty_ratio'] = certainty_count / word_count * 1000  # per 1000 words
+        # 3. Dynamic linguistic sentiment analysis
+        hedge_matches = len(re.findall(self.hedge_pattern, text_lower))
+        certainty_matches = len(re.findall(self.certainty_pattern, text_lower))
+        claim_matches = len(re.findall(self.claim_pattern, text_lower))
         
-        # 4. Computer science-specific patterns
-        theory_count = sum(text.lower().count(term) for term in self.theory_terms)
-        jargon_count = sum(text.lower().count(term) for term in self.cs_jargon)
-        features['theory_term_ratio'] = theory_count / word_count * 1000
-        features['jargon_term_ratio'] = jargon_count / word_count * 1000
+        features['hedge_density'] = hedge_matches / word_count * 1000
+        features['certainty_density'] = certainty_matches / word_count * 1000
+        features['claim_density'] = claim_matches / word_count * 1000
         
-        # 5. Computer science method patterns
-        cs_method_count = sum(len(re.findall(pattern, text, re.IGNORECASE)) for pattern in self.cs_method_patterns)
-        features['cs_method_count'] = cs_method_count
+        # 4. Generic academic patterns
+        features['self_reference_count'] = len(re.findall(self.reference_pattern, text_lower))
+        features['comparison_count'] = len(re.findall(self.comparison_pattern, text_lower))
+        features['evaluation_mentions'] = len(re.findall(self.evaluation_pattern, text_lower))
         
-        # 6. Section-specific features
-        # Abstract features (claims without evidence)
-        if 'abstract' in sections:
-            abstract = sections['abstract']
-            abstract_words = len(abstract.split()) + 1
-            abstract_claim_count = sum(abstract.lower().count(term) for term in self.claim_terms)
-            features['abstract_claim_ratio'] = abstract_claim_count / abstract_words * 1000
-        else:
-            features['abstract_claim_ratio'] = 0
+        # 5. Document structure features
+        features['has_limitations'] = 1 if 'limitation' in text_lower else 0
+        features['visual_elements'] = text_lower.count('figure') + text_lower.count('table') + text_lower.count('fig.')
         
-        # Results section features (performance reporting)
-        if 'results' in sections:
-            results = sections['results']
-            results_performance = len(re.findall(self.performance_pattern, results))
-            results_words = len(results.split()) + 1
-            features['results_performance_density'] = results_performance / results_words * 1000
-        else:
-            features['results_performance_density'] = 0
-        
-        # Limitations acknowledgment
-        features['limitations_mentioned'] = 1 if "limitation" in text.lower() or "limitations" in text.lower() else 0
-        
-        # 7. Evaluation checks
-        evaluation_count = sum(text.lower().count(term) for term in self.evaluation_terms)
-        features['evaluation_ratio'] = evaluation_count / word_count * 1000
-        
-        # 8. Abstract vs conclusion claim consistency
-        if 'abstract' in sections and 'conclusion' in sections:
-            abstract = sections['abstract']
-            conclusion = sections['conclusion']
-            abstract_claims = self._extract_key_claims(abstract)
-            conclusion_claims = self._extract_key_claims(conclusion)
-            features['claim_consistency'] = self._compare_claims(abstract_claims, conclusion_claims)
-        else:
-            features['claim_consistency'] = 0
-            
-        # 9. Figure and table mentions
-        features['figure_mentions'] = text.lower().count("figure") + text.lower().count("fig.")
-        features['table_mentions'] = text.lower().count("table")
-        
-        # 10. Comparison patterns
-        features['comparison_count'] = (text.count("compared to") + 
-                                     text.count("versus") + 
-                                     text.count("vs.") +
-                                     text.count("outperforms") +
-                                     text.count("better than"))
-        
-        # 11. Self-citation patterns
-        features['self_reference_count'] = (text.lower().count("our method") + 
-                                        text.lower().count("our approach") + 
-                                        text.lower().count("our algorithm") +
-                                        text.lower().count("our model") +
-                                        text.lower().count("our system"))
-        
-        # Return feature values as a list in a consistent order
-        feature_values = [
-            features['length'], 
-            features['avg_word_length'],
-            features['p_value_count'], 
-            features['signif_stars_count'],
-            features['performance_count'],
-            features['hedge_ratio'], 
-            features['certainty_ratio'],
-            features['theory_term_ratio'],
-            features['jargon_term_ratio'],
-            features['cs_method_count'],
-            features['abstract_claim_ratio'],
-            features['results_performance_density'],
-            features['limitations_mentioned'],
-            features['evaluation_ratio'],
-            features['claim_consistency'],
-            features['figure_mentions'],
-            features['table_mentions'],
-            features['comparison_count'],
+        # Return feature values in consistent order
+        return [
+            features['length'],
+            features['avg_word_length'], 
+            features['p_value_count'],
+            features['significance_stars'],
+            features['numeric_density'],
+            features['hedge_density'],
+            features['certainty_density'],
+            features['claim_density'],
             features['self_reference_count'],
-            features.get('method_limitation_ratio', 0)  # Include with default if not set
+            features['comparison_count'],
+            features['evaluation_mentions'],
+            features['has_limitations'],
+            features['visual_elements']
         ]
-        
-        return feature_values
-    
-    def _extract_sections(self, text):
-        """Extract sections from the paper text"""
-        section_dict = {}
-        section_markers = {
-            'abstract': ['abstract'],
-            'introduction': ['introduction', '1. introduction', 'i. introduction'],
-            'literature': ['literature', 'literature review', 'related work', 'related literature'],
-            'methods': ['method', 'methods', 'methodology', 'approach', 'algorithm'],
-            'data': ['data', 'dataset', 'experimental setup', 'experiments'],
-            'results': ['results', 'findings', 'experimental results', 'evaluation'],
-            'discussion': ['discussion'],
-            'conclusion': ['conclusion', 'conclusions', 'concluding remarks']
-        }
-        
-        text_lower = text.lower()
-        
-        for section_key, markers in section_markers.items():
-            for marker in markers:
-                # Try different formats of section headers
-                patterns = [
-                    f'\n{marker}\n',
-                    f'\n{marker}.\n',
-                    f'\n{marker}:\n',
-                    f'\n{marker.title()}\n',
-                    f'\n{marker.upper()}\n',
-                    f'\n{marker.capitalize()}\n'
-                ]
-                
-                for pattern in patterns:
-                    start_pos = text_lower.find(pattern)
-                    if start_pos != -1:
-                        start_pos += len(pattern) - 1  # -1 to keep the last newline
-                        
-                        # Find the next section
-                        end_pos = float('inf')
-                        for next_section_key, next_markers in section_markers.items():
-                            if next_section_key != section_key:
-                                for next_marker in next_markers:
-                                    for next_pattern in patterns:
-                                        next_start = text_lower.find(next_pattern, start_pos)
-                                        if next_start != -1 and next_start < end_pos:
-                                            end_pos = next_start
-                        
-                        if end_pos == float('inf'):
-                            end_pos = len(text)
-                        
-                        section_dict[section_key] = text[start_pos:end_pos].strip()
-                        break
-                
-                if section_key in section_dict:
-                    break
-        
-        return section_dict
-    
-    def _extract_key_claims(self, text):
-        """Extract key claims from text using computer science-specific terms"""
-        claim_sentences = []
-        sentences = sent_tokenize(text)
-        
-        for sentence in sentences:
-            if any(term in sentence.lower() for term in self.claim_terms):
-                claim_sentences.append(sentence)
-        
-        return claim_sentences
-    
-    def _compare_claims(self, claims1, claims2):
-        """Compare claims for consistency using computer science-specific terminology"""
-        if not claims1 or not claims2:
-            return 0
-        
-        # Tokenize and remove stopwords
-        words1 = []
-        for claim in claims1:
-            words1.extend([w.lower() for w in word_tokenize(claim) 
-                           if w.lower() not in self.stopwords and w.isalpha()])
-        
-        words2 = []
-        for claim in claims2:
-            words2.extend([w.lower() for w in word_tokenize(claim) 
-                           if w.lower() not in self.stopwords and w.isalpha()])
-        
-        # Calculate overlap
-        common_words = set(words1).intersection(set(words2))
-        all_words = set(words1).union(set(words2))
-        
-        if not all_words:
-            return 0
-            
-        return len(common_words) / len(all_words)
 
 class FeatureFusionLayer(nn.Module):
     """
@@ -967,16 +772,7 @@ def evaluate_hierarchical_model(test_dataloader, model, device, label_names, fea
 def load_papers_from_json(json_file_path):
     """
     Load computer science research papers from a JSON file.
-    
-    Parameters:
-    -----------
-    json_file_path : str
-        Path to the JSON file containing paper data
-        
-    Returns:
-    --------
-    pandas.DataFrame
-        DataFrame containing paper texts and bias labels
+    Simplified to work specifically with your dataset structure.
     """
     import pandas as pd
     import json
@@ -992,165 +788,83 @@ def load_papers_from_json(json_file_path):
         with open(json_file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
-        # Handle different possible JSON structures
         papers = []
         
-        # Case 1: List of paper objects
-        if isinstance(data, list):
-            for i, paper in enumerate(data):
-                if not isinstance(paper, dict):
-                    print(f"Warning: Item at index {i} is not a dictionary. Skipping.")
-                    continue
-                    
-                # Extract text and label
-                text = paper.get('Body', paper.get('text', paper.get('content', paper.get('abstract', ''))))
+        # Your data is a list of paper dictionaries
+        for i, paper in enumerate(data):
+            if not isinstance(paper, dict):
+                print(f"Warning: Item at index {i} is not a dictionary. Skipping.")
+                continue
                 
-                # Extract label - use 'Overall Bias' (with space, as in CS data)
-                label = paper.get('Overall Bias', paper.get('OverallBias', paper.get('bias_label', 
-                                  paper.get('bias_type', None))))
-                
-                # Skip papers with missing or empty bias labels (but not numeric 0 which is valid)
-                if label is None or label == "":
-                    print(f"Warning: Skipping paper at index {i} - missing or empty bias label")
-                    continue
-                
-                # Convert string labels to integers if needed
-                if isinstance(label, str):
-                    # Handle exact matches first (CS data format)
-                    if label == 'No Bias':
-                        label = 0
-                    elif label == 'Cognitive Bias':
-                        label = 1
-                    elif label == 'Publication Bias':
-                        label = 2
-                    else:
-                        # Fallback to case-insensitive mapping
-                        label_map = {
-                            'no_bias': 0, 'none': 0, 'no bias': 0, 'nobias': 0,
-                            'cognitive_bias': 1, 'cognitive': 1, 'cognitive bias': 1, 'cognitivebias': 1,
-                            'publication_bias': 2, 'publication': 2, 'publication bias': 2, 'publicationbias': 2
-                        }
-                        mapped_label = label_map.get(label.strip().lower(), None)
-                        if mapped_label is None:
-                            print(f"Warning: Skipping paper at index {i} - unknown bias label '{label}'")
-                            continue
-                        label = mapped_label
-                
-                # If label is float (like in sample data), convert to int
-                elif isinstance(label, float):
-                    if label in [0.0, 1.0, 2.0]:
-                        label = int(label)
-                    else:
-                        print(f"Warning: Skipping paper at index {i} - invalid float label '{label}'")
-                        continue
-                
-                # Skip papers with empty text
-                if not text or text.strip() == "":
-                    print(f"Warning: Skipping paper at index {i} - empty text content")
-                    continue
-                
-                papers.append({'text': text, 'label': label})
-                
-        # Case 2: Dictionary with paper data
-        elif isinstance(data, dict):
-            # If it's a dictionary containing a list of papers
-            if 'papers' in data and isinstance(data['papers'], list):
-                papers_data = data['papers']
-                for i, paper in enumerate(papers_data):
-                    if not isinstance(paper, dict):
-                        print(f"Warning: Item at index {i} in 'papers' is not a dictionary. Skipping.")
-                        continue
-                        
-                    text = paper.get('text', paper.get('content', paper.get('abstract', '')))
-                    label = paper.get('label', paper.get('bias_label', paper.get('bias_type', 
-                                      paper.get('CognitiveBias', paper.get('PublicationBias', 
-                                      paper.get('NoBias', 0))))))
-                    
-                    # Convert string labels if needed
-                    if isinstance(label, str):
-                        label_map = {
-                            'no_bias': 0, 'none': 0, 'no bias': 0, 'nobias': 0,
-                            'cognitive_bias': 1, 'cognitive': 1, 'cognitive bias': 1, 'cognitivebias': 1,
-                            'publication_bias': 2, 'publication': 2, 'publication bias': 2, 'publicationbias': 2
-                        }
-                        label = label_map.get(label.lower(), 0)
-                    
-                    # If label is float, convert to int
-                    if isinstance(label, float):
-                        label = int(label)
-                    
-                    papers.append({'text': text, 'label': label})
-            # If it's a dictionary with IDs as keys
+            # Extract Body and Reason fields only
+            body_text = paper.get('Body', '')
+            reason_text = paper.get('Reason', '')
+            
+            # Process Reason field: split by semicolon and clean up
+            if reason_text and isinstance(reason_text, str):
+                # Split by semicolon and clean each reason
+                reasons = [reason.strip().lstrip('+') for reason in reason_text.split(';') if reason.strip()]
+                reason_processed = '; '.join(reasons)
             else:
-                for paper_id, paper_data in data.items():
-                    if isinstance(paper_data, dict):
-                        text = paper_data.get('text', paper_data.get('content', paper_data.get('abstract', '')))
-                        label = paper_data.get('label', paper_data.get('bias_label', paper_data.get('bias_type', 
-                                          paper_data.get('CognitiveBias', paper_data.get('PublicationBias', 
-                                          paper_data.get('NoBias', 0))))))
-                        
-                        # Convert string labels if needed
-                        if isinstance(label, str):
-                            label_map = {
-                                'no_bias': 0, 'none': 0, 'no bias': 0, 'nobias': 0,
-                                'cognitive_bias': 1, 'cognitive': 1, 'cognitive bias': 1, 'cognitivebias': 1,
-                                'publication_bias': 2, 'publication': 2, 'publication bias': 2, 'publicationbias': 2
-                            }
-                            label = label_map.get(label.lower(), 0)
-                        
-                        # If label is float, convert to int
-                        if isinstance(label, float):
-                            label = int(label)
-                        
-                        papers.append({'text': text, 'label': label})
-        
-        # If no valid structure found
-        else:
-            print(f"Error: Unsupported JSON structure in {json_file_path}")
-            return pd.DataFrame(columns=['text', 'label'])
+                reason_processed = ''
+            
+            # Combine Body and Reason as input text
+            if body_text and reason_processed:
+                text = f"{body_text}\n\nRetraction Reasons: {reason_processed}"
+            elif body_text:
+                text = body_text
+            elif reason_processed:
+                text = f"Retraction Reasons: {reason_processed}"
+            else:
+                text = ''
+            
+            # Extract label from 'Overall Bias' or 'OverallBias' field
+            label = paper.get('Overall Bias') or paper.get('OverallBias')
+            
+            # Skip papers with missing, empty, or NaN labels
+            if label is None or label == "" or (isinstance(label, float) and pd.isna(label)):
+                print(f"Warning: Skipping paper at index {i} - missing/empty/NaN bias label")
+                continue
+            
+            # Convert labels to integers
+            if label == 'No Bias':
+                label = 0
+            elif label == 'Cognitive Bias':
+                label = 1
+            elif label == 'Publication Bias':
+                label = 2
+            else:
+                print(f"Warning: Skipping paper at index {i} - unknown bias label '{label}'")
+                continue
+            
+            # Skip papers with empty text
+            if not text or text.strip() == "":
+                print(f"Warning: Skipping paper at index {i} - empty text content")
+                continue
+            
+            papers.append({'text': text, 'label': label})
         
         # Create DataFrame
         df = pd.DataFrame(papers)
         
-        # Validate data
         if len(df) == 0:
             print(f"Warning: No valid paper data found in {json_file_path}")
             return pd.DataFrame(columns=['text', 'label'])
-            
-        if 'text' not in df.columns:
-            print(f"Warning: 'text' column not found in the JSON data from {json_file_path}")
-            df['text'] = ""
         
-        if 'label' not in df.columns:
-            print(f"Warning: 'label' column not found in the JSON data from {json_file_path}")
-            df['label'] = 0
-        
-        # Ensure text is string and label is integer
-        df['text'] = df['text'].astype(str)
-        df['label'] = df['label'].astype(int)
-        
-        # Remove any rows with empty text
-        original_count = len(df)
-        df = df[df['text'].str.strip().str.len() > 0].reset_index(drop=True)
-        if len(df) < original_count:
-            print(f"Info: Removed {original_count - len(df)} rows with empty text")
-        
-        # Validate label values - should only be 0, 1, 2 at this point
-        invalid_labels = df[~df['label'].isin([0, 1, 2])]
-        if len(invalid_labels) > 0:
-            print(f"Error: Found {len(invalid_labels)} papers with invalid labels after filtering:")
-            for idx, row in invalid_labels.iterrows():
-                print(f"  Index {idx}: label = {row['label']}")
-            # Remove invalid entries rather than converting
-            df = df[df['label'].isin([0, 1, 2])].reset_index(drop=True)
-            print(f"Removed {len(invalid_labels)} invalid entries")
+        # Quick validation
+        print(f"\n=== DATA VALIDATION ===")
+        sample_check = min(3, len(papers))
+        reason_count = sum(1 for i in range(sample_check) if "Retraction Reasons:" in papers[i]['text'])
+        print(f"Papers with Reason field: {reason_count}/{sample_check}")
+        print(f"✅ Data loaded successfully")
+        print(f"=== END VALIDATION ===\n")
         
         # Final summary
         final_counts = df['label'].value_counts().sort_index()
         print(f"Successfully loaded {len(df)} papers from {json_file_path}")
-        print(f"Final label distribution:")
+        print(f"Label distribution:")
+        label_names = {0: 'No Bias', 1: 'Cognitive Bias', 2: 'Publication Bias'}
         for label_num, count in final_counts.items():
-            label_names = {0: 'No Bias', 1: 'Cognitive Bias', 2: 'Publication Bias'}
             print(f"  {label_names[label_num]} ({label_num}): {count} papers")
         
         return df
@@ -1305,14 +1019,11 @@ def main():
         if total_memory < 6.0:  # Less than 6GB
             print("WARNING: Low GPU memory detected. Using memory-optimized settings.")
     
-    # Feature names for the computer science-specific extractor
+    # Feature names for the dynamic academic paper analyzer
     feature_names = [
-        'length', 'avg_word_length', 'p_value_count', 'signif_stars_count',
-        'performance_count', 'hedge_ratio', 'certainty_ratio', 'theory_term_ratio',
-        'jargon_term_ratio', 'cs_method_count', 'abstract_claim_ratio',
-        'results_performance_density', 'limitations_mentioned', 'evaluation_ratio',
-        'claim_consistency', 'figure_mentions', 'table_mentions', 'comparison_count', 
-        'self_reference_count', 'method_limitation_ratio'
+        'length', 'avg_word_length', 'p_value_count', 'significance_stars', 'numeric_density',
+        'hedge_density', 'certainty_density', 'claim_density', 'self_reference_count', 
+        'comparison_count', 'evaluation_mentions', 'has_limitations', 'visual_elements'
     ]
     
     # Load and process paper data from JSON
@@ -1344,7 +1055,7 @@ def main():
     
     # Extract handcrafted features with computer science-specific extractor
     print("Extracting computer science-specific handcrafted features...")
-    extractor = ComputerScienceBiasFeatureExtractor()
+    extractor = DynamicAcademicFeatureExtractor()
     handcrafted_features = []
     
     for _, row in papers_df.iterrows():

@@ -11,7 +11,7 @@ from datetime import datetime
 # Import the model classes and utilities from the main script
 from withSmoteTransformer import (
     HierarchicalBiasPredictionModel, 
-    ComputerScienceBiasFeatureExtractor,
+    DynamicAcademicFeatureExtractor,
     HierarchicalResearchPaperDataset,
     load_papers_from_json
 )
@@ -36,14 +36,11 @@ def evaluate_saved_model(model_path='best_hierarchical_model.pt',
     # Set device
     device = torch.device('cpu')
     
-    # Feature names
+    # Feature names for the dynamic academic paper analyzer (match training)
     feature_names = [
-        'length', 'avg_word_length', 'p_value_count', 'signif_stars_count',
-        'performance_count', 'hedge_ratio', 'certainty_ratio', 'theory_term_ratio',
-        'jargon_term_ratio', 'cs_method_count', 'abstract_claim_ratio',
-        'results_performance_density', 'limitations_mentioned', 'evaluation_ratio',
-        'claim_consistency', 'figure_mentions', 'table_mentions', 'comparison_count', 
-        'self_reference_count', 'method_limitation_ratio'
+        'length', 'avg_word_length', 'p_value_count', 'significance_stars', 'numeric_density',
+        'hedge_density', 'certainty_density', 'claim_density', 'self_reference_count', 
+        'comparison_count', 'evaluation_mentions', 'has_limitations', 'visual_elements'
     ]
     
     # Load data
@@ -51,9 +48,31 @@ def evaluate_saved_model(model_path='best_hierarchical_model.pt',
     papers_df = load_papers_from_json(data_path)
     print(f"Loaded {len(papers_df)} papers")
     
+    # Validate test data structure and leakage
+    print("Validating test data structure and leakage...")
+    if len(papers_df) > 0:
+        sample_text = papers_df['text'].iloc[0] if 'text' in papers_df.columns else ""
+        
+        # Check for proper structure (Body + Reason)
+        has_body = len(str(sample_text)) > 100  # Substantial content
+        has_reason = "Retraction Reasons:" in str(sample_text)
+        
+        # Check for target variable leakage
+        leakage_found = 'Overall Bias' in str(sample_text)
+        
+        print(f"📊 Test data structure:")
+        print(f"  - Substantial content (Body): {'✅' if has_body else '❌'}")
+        print(f"  - Reason field included: {'✅' if has_reason else '❌'}")
+        print(f"  - Target variable leakage: {'🚨 FOUND' if leakage_found else '✅ None'}")
+        
+        if leakage_found:
+            print("🚨 CRITICAL: Target variable leakage detected in test data!")
+        else:
+            print("✅ Test data appears clean")
+    
     # Extract features
     print("Extracting features...")
-    extractor = ComputerScienceBiasFeatureExtractor()
+    extractor = DynamicAcademicFeatureExtractor()
     handcrafted_features = []
     
     for _, row in papers_df.iterrows():
@@ -77,13 +96,13 @@ def evaluate_saved_model(model_path='best_hierarchical_model.pt',
     except:
         tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased', use_fast=True)
     
-    # Create test dataset (match training parameters)
+    # Create test dataset (match OPTIMIZED training parameters)
     test_dataset = HierarchicalResearchPaperDataset(
         test_texts, test_labels, tokenizer, test_features,
-        max_seq_length=128, max_sections=3, max_sents=6
+        max_seq_length=64, max_sections=2, max_sents=3  # Match optimized training config
     )
     
-    test_dataloader = DataLoader(test_dataset, batch_size=1)
+    test_dataloader = DataLoader(test_dataset, batch_size=4)  # Match optimized training batch size
     
     # Initialize model architecture (must match training configuration)
     print("Initializing model architecture...")
