@@ -3,20 +3,14 @@ import numpy as np
 from collections import Counter
 
 
-def split_cs_dataset(input_file='computer_science_papers.json', 
-                    train_size=4000, 
-                    test_size=1258,
-                    train_output='cs_train.json',
-                    test_output='cs_test.json'):
+def extract_single_random_entry(input_file='computer_science_papers.json', 
+                               output_file='single_random_paper.json'):
     """
-    Split computer science dataset into training and testing sets
+    Extract a single random entry from the computer science dataset
     
     Args:
         input_file: Input JSON file with all papers
-        train_size: Number of papers for training (4000)
-        test_size: Number of papers for testing (1258) 
-        train_output: Output file for training set
-        test_output: Output file for testing set
+        output_file: Output file for the single random paper
     """
     
     print(f"Loading {input_file}...")
@@ -27,83 +21,50 @@ def split_cs_dataset(input_file='computer_science_papers.json',
         
         print(f"Total papers loaded: {len(data)}")
         
-        # Analyze class distribution
-        labels = []
-        for paper in data:
-            if 'OverallBias' in paper:
-                if paper['OverallBias'] == 'No Bias':
-                    labels.append(0)
-                elif paper['OverallBias'] == 'Cognitive Bias':
-                    labels.append(1)
-                elif paper['OverallBias'] == 'Publication Bias':
-                    labels.append(2)
-                else:
-                    labels.append(2)  # Default to publication bias
-            else:
-                # Fallback logic
-                labels.append(2)
-        
-        label_counts = Counter(labels)
-        print(f"Class distribution: {label_counts}")
-        
-        # Create stratified split to maintain class proportions
-        class_indices = {0: [], 1: [], 2: []}
-        for i, label in enumerate(labels):
-            class_indices[label].append(i)
-        
-        print(f"Papers per class:")
-        for class_id, indices in class_indices.items():
-            class_names = {0: 'No Bias', 1: 'Cognitive Bias', 2: 'Publication Bias'}
-            print(f"  {class_names[class_id]}: {len(indices)} papers")
-        
-        # Calculate split proportions for each class
-        train_indices = []
-        test_indices = []
-        
-        total_papers = len(data)
-        train_ratio = train_size / total_papers
-        
-        for class_id, indices in class_indices.items():
-            np.random.shuffle(indices)  # Randomize order
+        # Filter papers to only include those with all required fields
+        valid_papers = []
+        for i, paper in enumerate(data):
+            if not isinstance(paper, dict):
+                continue
+                
+            # Check for bias label (Overall Bias or OverallBias)
+            bias_label = paper.get('Overall Bias') or paper.get('OverallBias')
             
-            n_train_class = int(len(indices) * train_ratio)
-            n_train_class = min(n_train_class, len(indices) - 1)  # Ensure at least 1 for test
+            # Check for Body field
+            body = paper.get('Body', '')
             
-            train_indices.extend(indices[:n_train_class])
-            test_indices.extend(indices[n_train_class:])
+            # Check for Reason field  
+            reason = paper.get('Reason', '')
+            
+            # Only include papers with all three fields present and non-empty
+            if bias_label and bias_label.strip() and body and body.strip() and reason and reason.strip():
+                valid_papers.append((i, paper, bias_label))
         
-        # Shuffle the final indices
-        np.random.shuffle(train_indices)
-        np.random.shuffle(test_indices)
+        print(f"Valid papers (with all required fields): {len(valid_papers)}")
         
-        # Limit to desired sizes
-        train_indices = train_indices[:train_size]
-        test_indices = test_indices[:test_size]
+        if len(valid_papers) == 0:
+            print("Error: No valid papers found!")
+            return False
         
-        print(f"\nActual split:")
-        print(f"Training set: {len(train_indices)} papers")
-        print(f"Test set: {len(test_indices)} papers")
+        # Randomly select 1 paper
+        np.random.seed(42)  # For reproducibility
+        random_index = np.random.randint(0, len(valid_papers))
+        selected_paper_info = valid_papers[random_index]
         
-        # Create training set
-        train_data = [data[i] for i in train_indices]
-        with open(train_output, 'w', encoding='utf-8') as f:
-            json.dump(train_data, f, indent=2)
+        original_index, selected_paper, bias_label = selected_paper_info
         
-        # Create test set  
-        test_data = [data[i] for i in test_indices]
-        with open(test_output, 'w', encoding='utf-8') as f:
-            json.dump(test_data, f, indent=2)
+        print(f"\nRandomly selected paper:")
+        print(f"  Original index: {original_index}")
+        print(f"  Title: {selected_paper.get('Title', 'No title')}")
+        print(f"  Bias label: {bias_label}")
+        print(f"  Body length: {len(selected_paper.get('Body', ''))} characters")
+        print(f"  Reason length: {len(selected_paper.get('Reason', ''))} characters")
         
-        # Verify class distribution in splits
-        train_labels = [labels[i] for i in train_indices]
-        test_labels = [labels[i] for i in test_indices]
+        # Save the single paper to output file
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump([selected_paper], f, indent=2, ensure_ascii=False)
         
-        print(f"\nTraining set class distribution: {Counter(train_labels)}")
-        print(f"Test set class distribution: {Counter(test_labels)}")
-        
-        print(f"\nDataset split successfully!")
-        print(f"Training data saved to: {train_output}")
-        print(f"Test data saved to: {test_output}")
+        print(f"\nSingle random paper saved to: {output_file}")
         
         return True
         
@@ -113,17 +74,16 @@ def split_cs_dataset(input_file='computer_science_papers.json',
 
 
 if __name__ == "__main__":
-    print("Computer Science Dataset Splitter")
-    print("=" * 40)
+    print("Computer Science Dataset - Single Random Entry Extractor")
+    print("=" * 60)
     
-    # Split the main dataset
-    success = split_cs_dataset()
+    # Extract a single random entry from the main dataset
+    success = extract_single_random_entry()
     
     if success:
-        print("\n" + "=" * 40)
-        print("Dataset splitting completed!")
-        print("\nFiles created:")
-        print("- cs_train.json (4000 papers for training)")
-        print("- cs_test.json (1258 papers for testing)")
+        print("\n" + "=" * 60)
+        print("Single random entry extraction completed!")
+        print("\nFile created:")
+        print("- single_random_paper.json (1 random paper for testing)")
     else:
-        print("Dataset splitting failed!")
+        print("Single entry extraction failed!")

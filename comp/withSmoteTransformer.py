@@ -2,25 +2,20 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer, AutoModel, AutoConfig
+from transformers import AutoTokenizer, AutoModel
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, confusion_matrix
 from imblearn.over_sampling import SMOTE
 import re
+import json
 from collections import Counter
-import matplotlib.pyplot as plt
-import seaborn as sns
 import os
 import nltk
 from nltk.tokenize import sent_tokenize, word_tokenize
 from nltk.corpus import stopwords
-import gc
-import psutil
 
 # Download NLTK resources if needed
-
-nltk.download('punkt_tab')
 try:
     nltk.data.find('tokenizers/punkt')
 except LookupError:
@@ -30,10 +25,30 @@ try:
 except LookupError:
     nltk.download('stopwords')
 
-# Enhanced dataset class to support hierarchical structure
-class HierarchicalResearchPaperDataset(Dataset):
+# Focal Loss for handling extreme class imbalance
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=None, gamma=2., reduction='mean'):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+        
+    def forward(self, inputs, targets):
+        ce_loss = F.cross_entropy(inputs, targets, weight=self.alpha, reduction='none')
+        pt = torch.exp(-ce_loss)
+        focal_loss = (1 - pt) ** self.gamma * ce_loss
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+
+# Enhanced dataset class to support hierarchical structure for CS papers
+class HierarchicalCSPaperDataset(Dataset):
     def __init__(self, texts, labels, tokenizer, handcrafted_features, 
-                 max_seq_length=512, max_sections=8, max_sents=16):
+                 max_seq_length=512, max_sections=6, max_sents=12):
         self.texts = texts
         self.labels = labels
         self.tokenizer = tokenizer
@@ -120,11 +135,11 @@ class HierarchicalResearchPaperDataset(Dataset):
         }
     
     def _extract_sections(self, text):
-        """Extract sections from the paper text"""
-        # Simple section extraction - in practice, you might want more sophisticated parsing
+        """Extract sections from CS paper text"""
         section_markers = [
-            'abstract', 'introduction', 'literature review', 'methodology', 
-            'data', 'results', 'discussion', 'conclusion', 'references'
+            'abstract', 'introduction', 'related work', 'methodology', 
+            'implementation', 'results', 'experiments', 'evaluation', 
+            'discussion', 'conclusion', 'references'
         ]
         
         # Extract sections
@@ -161,90 +176,325 @@ class HierarchicalResearchPaperDataset(Dataset):
         
         return sections
 
-# Dynamic feature extractor for academic papers (domain-agnostic)
-class DynamicAcademicFeatureExtractor:
+# Computer Science bias feature extractor
+class CSBiasFeatureExtractor:
     """Extract features that might indicate bias in computer science research papers"""
     
     def __init__(self):
-        # Basic statistical patterns (universal across domains)
+        # Basic patterns
         self.p_value_pattern = r'p\s*[<>=]\s*0\.0\d+'
         self.significance_stars = r'\*{1,3}\s*'
-        self.number_pattern = r'[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?'
+        self.performance_pattern = r'(?:accuracy|precision|recall|f1|performance|improvement)\s*[=:]\s*[-+]?[0-9]*\.?[0-9]+[%]?'
         
-        # Dynamic sentiment patterns (will be populated from data)
-        self.hedge_pattern = r'\b(?:may|might|could|possibly|potentially|suggests|appears|seems|likely|unlikely|perhaps|arguably|tend|indicate|approximately|roughly|around|about)\b'
-        self.certainty_pattern = r'\b(?:clearly|obviously|certainly|definitely|undoubtedly|conclusively|absolutely|always|never|established|proves|demonstrates|robust|significant|substantial|optimal|best|superior|outperforms)\b'
-        self.claim_pattern = r'\b(?:performance|efficiency|accuracy|speed|improvement|enhancement|optimization|breakthrough|novel|innovative|cutting-edge|faster|better|superior)\b'
+        # CS-specific hedge words
+        self.hedge_words = [
+            'may', 'might', 'could', 'possibly', 'potentially', 'suggests', 
+            'appears', 'seems', 'likely', 'unlikely', 'perhaps', 'arguably',
+            'tend to', 'tends to', 'tended to', 'indicate', 'indicates',
+            'approximately', 'roughly', 'around', 'about'
+        ]
         
-        # Generic academic patterns
-        self.reference_pattern = r'\b(?:our|we|us|this)\s+(?:method|approach|algorithm|model|system|technique|framework|solution)\b'
-        self.comparison_pattern = r'\b(?:compared?\s+to|versus|vs\.?|outperforms?|better\s+than|superior\s+to)\b'
-        self.evaluation_pattern = r'\b(?:evaluat|validat|test|benchmark|baseline|comparison|study|analysis)\w*\b'
+        # CS-specific certainty words
+        self.certainty_words = [
+            'clearly', 'obviously', 'certainly', 'definitely', 'undoubtedly',
+            'conclusively', 'absolutely', 'always', 'never', 'established',
+            'proves', 'demonstrates', 'robust', 'significant', 'substantial',
+            'strong evidence', 'strongly supports', 'decisive', 'optimal',
+            'best', 'superior', 'outperforms', 'state-of-the-art'
+        ]
+        
+        # CS theory and method references
+        self.theory_terms = [
+            'machine learning', 'deep learning', 'neural network', 'algorithm',
+            'optimization', 'theoretical analysis', 'computational complexity',
+            'big o notation', 'time complexity', 'space complexity',
+            'theoretical framework', 'mathematical model'
+        ]
+        
+        # CS-specific claim words
+        self.claim_terms = [
+            'performance', 'accuracy', 'efficiency', 'scalability', 'robustness',
+            'improvement', 'optimization', 'enhancement', 'breakthrough',
+            'novel', 'innovative', 'superior', 'outperforms', 'beats',
+            'faster', 'better', 'more accurate', 'highly effective'
+        ]
+        
+        # CS jargon that might signal overconfidence
+        self.cs_jargon = [
+            'state-of-the-art', 'cutting-edge', 'novel approach', 'breakthrough',
+            'paradigm shift', 'revolutionary', 'game-changing', 'unprecedented',
+            'significantly outperforms', 'dramatically improves', 'orders of magnitude'
+        ]
+        
+        # Experimental rigor terms
+        self.rigor_terms = [
+            'baseline', 'benchmark', 'cross-validation', 'ablation study',
+            'statistical significance', 'error bars', 'confidence interval',
+            'reproducible', 'replication', 'validation set', 'test set'
+        ]
+        
+        # CS-specific method patterns
+        self.cs_method_patterns = [
+            r'CNN', r'RNN', r'LSTM', r'GRU', r'transformer', r'attention',
+            r'SVM', r'random forest', r'gradient descent', r'backpropagation',
+            r'reinforcement learning', r'supervised learning', r'unsupervised learning'
+        ]
         
         # Stopwords for cleaning text
         self.stopwords = set(stopwords.words('english'))
         
-    def extract_features(self, text):
-        """Extract dynamic features from academic text without hardcoded domain assumptions"""
-        
-        # Handle None or empty text  
-        if text is None or not text:
-            return [0] * 12  # Updated feature count
-        
-        text_lower = text.lower()
-        words = text.split()
-        word_count = len(words) + 1  # Avoid division by zero
-        
+    def extract_features(self, text, reason_text=None):
         features = {}
+        
+        # Handle None or empty text
+        if text is None or not text:
+            return [0] * 25  # Updated feature count
+        
+        # Extract sections 
+        sections = self._extract_sections(text)
         
         # 1. Basic text statistics
         features['length'] = len(text)
-        features['avg_word_length'] = sum(len(w) for w in words) / word_count
+        word_count = len(text.split()) + 1  # Add 1 to avoid division by zero
+        features['avg_word_length'] = sum(len(w) for w in text.split()) / word_count
         
-        # 2. Statistical reporting patterns (universal)
-        features['p_value_count'] = len(re.findall(self.p_value_pattern, text))
-        features['significance_stars'] = len(re.findall(self.significance_stars, text))
-        features['numeric_density'] = len(re.findall(self.number_pattern, text)) / word_count * 1000
+        # 2. Statistical reporting patterns
+        features['p_value_count'] = len(re.findall(self.p_value_pattern, text, re.IGNORECASE))
+        features['significance_stars_count'] = len(re.findall(self.significance_stars, text))
+        features['performance_metrics_count'] = len(re.findall(self.performance_pattern, text, re.IGNORECASE))
         
-        # 3. Dynamic linguistic sentiment analysis
-        hedge_matches = len(re.findall(self.hedge_pattern, text_lower))
-        certainty_matches = len(re.findall(self.certainty_pattern, text_lower))
-        claim_matches = len(re.findall(self.claim_pattern, text_lower))
+        # 3. Linguistic features
+        hedge_count = sum(text.lower().count(word) for word in self.hedge_words)
+        certainty_count = sum(text.lower().count(word) for word in self.certainty_words)
+        features['hedge_ratio'] = hedge_count / word_count * 1000
+        features['certainty_ratio'] = certainty_count / word_count * 1000
         
-        features['hedge_density'] = hedge_matches / word_count * 1000
-        features['certainty_density'] = certainty_matches / word_count * 1000
-        features['claim_density'] = claim_matches / word_count * 1000
+        # 4. CS-specific patterns
+        theory_count = sum(text.lower().count(term) for term in self.theory_terms)
+        jargon_count = sum(text.lower().count(term) for term in self.cs_jargon)
+        features['theory_term_ratio'] = theory_count / word_count * 1000
+        features['jargon_term_ratio'] = jargon_count / word_count * 1000
         
-        # 4. Generic academic patterns
-        features['self_reference_count'] = len(re.findall(self.reference_pattern, text_lower))
-        features['comparison_count'] = len(re.findall(self.comparison_pattern, text_lower))
-        features['evaluation_mentions'] = len(re.findall(self.evaluation_pattern, text_lower))
+        # 5. CS method patterns
+        cs_method_count = sum(len(re.findall(pattern, text, re.IGNORECASE)) for pattern in self.cs_method_patterns)
+        features['cs_method_count'] = cs_method_count
         
-        # 5. Document structure features
-        features['has_limitations'] = 1 if 'limitation' in text_lower else 0
-        features['visual_elements'] = text_lower.count('figure') + text_lower.count('table') + text_lower.count('fig.')
+        # 6. Section-specific features
+        # Abstract claims
+        if 'abstract' in sections:
+            abstract = sections['abstract']
+            abstract_words = len(abstract.split()) + 1
+            abstract_claim_count = sum(abstract.lower().count(term) for term in self.claim_terms)
+            features['abstract_claim_ratio'] = abstract_claim_count / abstract_words * 1000
+        else:
+            features['abstract_claim_ratio'] = 0
         
-        # Return feature values in consistent order
-        return [
-            features['length'],
-            features['avg_word_length'], 
-            features['p_value_count'],
-            features['significance_stars'],
-            features['numeric_density'],
-            features['hedge_density'],
-            features['certainty_density'],
-            features['claim_density'],
-            features['self_reference_count'],
-            features['comparison_count'],
-            features['evaluation_mentions'],
-            features['has_limitations'],
-            features['visual_elements']
+        # Results section features
+        if 'results' in sections or 'experiments' in sections:
+            results = sections.get('results', sections.get('experiments', ''))
+            results_perf_metrics = len(re.findall(self.performance_pattern, results, re.IGNORECASE))
+            results_words = len(results.split()) + 1
+            features['results_metric_density'] = results_perf_metrics / results_words * 1000
+        else:
+            features['results_metric_density'] = 0
+        
+        # 7. Limitations acknowledgment
+        features['limitations_mentioned'] = 1 if "limitation" in text.lower() or "limitations" in text.lower() else 0
+        
+        # 8. Experimental rigor
+        rigor_count = sum(text.lower().count(term) for term in self.rigor_terms)
+        features['experimental_rigor_ratio'] = rigor_count / word_count * 1000
+        
+        # 9. Claim consistency (abstract vs conclusion)
+        if 'abstract' in sections and 'conclusion' in sections:
+            abstract = sections['abstract']
+            conclusion = sections['conclusion']
+            abstract_claims = self._extract_key_claims(abstract)
+            conclusion_claims = self._extract_key_claims(conclusion)
+            features['claim_consistency'] = self._compare_claims(abstract_claims, conclusion_claims)
+        else:
+            features['claim_consistency'] = 0
+            
+        # 10. Figure and table mentions
+        features['figure_mentions'] = text.lower().count("figure") + text.lower().count("fig.")
+        features['table_mentions'] = text.lower().count("table")
+        
+        # 11. Citation patterns
+        features['citation_count'] = text.count("et al.") + text.count("[")
+        features['self_citation_count'] = (text.lower().count("our previous") + 
+                                        text.lower().count("our prior") + 
+                                        text.lower().count("our earlier") +
+                                        text.lower().count("our work"))
+        
+        # 12. Reason-based features (if available)
+        if reason_text:
+            reason_features = self._extract_reason_features(reason_text)
+            features.update(reason_features)
+        else:
+            # Default reason features
+            features['fake_peer_review'] = 0
+            features['data_issues'] = 0
+            features['paper_mill'] = 0
+            features['authorship_issues'] = 0
+            features['duplication_issues'] = 0
+        
+        # Return feature values as a list in consistent order
+        feature_values = [
+            features['length'], 
+            features['avg_word_length'],
+            features['p_value_count'], 
+            features['significance_stars_count'],
+            features['performance_metrics_count'],
+            features['hedge_ratio'], 
+            features['certainty_ratio'],
+            features['theory_term_ratio'],
+            features['jargon_term_ratio'],
+            features['cs_method_count'],
+            features['abstract_claim_ratio'],
+            features['results_metric_density'],
+            features['limitations_mentioned'],
+            features['experimental_rigor_ratio'],
+            features['claim_consistency'],
+            features['figure_mentions'],
+            features['table_mentions'],
+            features['citation_count'],
+            features['self_citation_count'],
+            features['fake_peer_review'],
+            features['data_issues'],
+            features['paper_mill'],
+            features['authorship_issues'],
+            features['duplication_issues'],
+            features.get('reproducibility_mentions', 0)
         ]
+        
+        return feature_values
+    
+    def _extract_reason_features(self, reason_text):
+        """Extract features from reason field"""
+        reason_features = {}
+        
+        if not reason_text:
+            return {
+                'fake_peer_review': 0,
+                'data_issues': 0,
+                'paper_mill': 0,
+                'authorship_issues': 0,
+                'duplication_issues': 0
+            }
+        
+        reason_lower = reason_text.lower()
+        
+        # Fake peer review indicators
+        reason_features['fake_peer_review'] = 1 if 'fake peer review' in reason_lower else 0
+        
+        # Data issues
+        data_keywords = ['concerns/issues about data', 'concerns/issues about results', 'unreliable results']
+        reason_features['data_issues'] = 1 if any(keyword in reason_lower for keyword in data_keywords) else 0
+        
+        # Paper mill indicators
+        reason_features['paper_mill'] = 1 if 'paper mill' in reason_lower else 0
+        
+        # Authorship issues
+        auth_keywords = ['concerns/issues about authorship', 'authorship/affiliation']
+        reason_features['authorship_issues'] = 1 if any(keyword in reason_lower for keyword in auth_keywords) else 0
+        
+        # Duplication issues
+        dup_keywords = ['duplication', 'euphemisms for duplication']
+        reason_features['duplication_issues'] = 1 if any(keyword in reason_lower for keyword in dup_keywords) else 0
+        
+        return reason_features
+    
+    def _extract_sections(self, text):
+        """Extract sections from CS paper text"""
+        section_dict = {}
+        section_markers = {
+            'abstract': ['abstract'],
+            'introduction': ['introduction', '1. introduction', 'i. introduction'],
+            'related_work': ['related work', 'literature review', 'background'],
+            'methodology': ['method', 'methods', 'methodology', 'approach'],
+            'implementation': ['implementation', 'system design', 'architecture'],
+            'experiments': ['experiments', 'experimental setup', 'evaluation'],
+            'results': ['results', 'findings', 'experimental results'],
+            'discussion': ['discussion'],
+            'conclusion': ['conclusion', 'conclusions', 'concluding remarks']
+        }
+        
+        text_lower = text.lower()
+        
+        for section_key, markers in section_markers.items():
+            for marker in markers:
+                patterns = [
+                    f'\n{marker}\n',
+                    f'\n{marker}.\n',
+                    f'\n{marker}:\n',
+                    f'\n{marker.title()}\n',
+                    f'\n{marker.upper()}\n'
+                ]
+                
+                for pattern in patterns:
+                    start_pos = text_lower.find(pattern)
+                    if start_pos != -1:
+                        start_pos += len(pattern) - 1
+                        
+                        # Find the next section
+                        end_pos = float('inf')
+                        for next_section_key, next_markers in section_markers.items():
+                            if next_section_key != section_key:
+                                for next_marker in next_markers:
+                                    for next_pattern in patterns:
+                                        next_start = text_lower.find(next_pattern, start_pos)
+                                        if next_start != -1 and next_start < end_pos:
+                                            end_pos = next_start
+                        
+                        if end_pos == float('inf'):
+                            end_pos = len(text)
+                        
+                        section_dict[section_key] = text[start_pos:end_pos].strip()
+                        break
+                
+                if section_key in section_dict:
+                    break
+        
+        return section_dict
+    
+    def _extract_key_claims(self, text):
+        """Extract key claims from text using CS-specific terms"""
+        claim_sentences = []
+        sentences = sent_tokenize(text)
+        
+        for sentence in sentences:
+            if any(term in sentence.lower() for term in self.claim_terms):
+                claim_sentences.append(sentence)
+        
+        return claim_sentences
+    
+    def _compare_claims(self, claims1, claims2):
+        """Compare claims for consistency"""
+        if not claims1 or not claims2:
+            return 0
+        
+        # Tokenize and remove stopwords
+        words1 = []
+        for claim in claims1:
+            words1.extend([w.lower() for w in word_tokenize(claim) 
+                           if w.lower() not in self.stopwords and w.isalpha()])
+        
+        words2 = []
+        for claim in claims2:
+            words2.extend([w.lower() for w in word_tokenize(claim) 
+                           if w.lower() not in self.stopwords and w.isalpha()])
+        
+        # Calculate overlap
+        common_words = set(words1).intersection(set(words2))
+        all_words = set(words1).union(set(words2))
+        
+        if not all_words:
+            return 0
+            
+        return len(common_words) / len(all_words)
 
+# Feature fusion layer (same as economics model)
 class FeatureFusionLayer(nn.Module):
-    """
-    Learned feature fusion layer that combines BERT embeddings with handcrafted features
-    """
     def __init__(self, bert_dim, handcrafted_dim, fusion_dim=256):
         super(FeatureFusionLayer, self).__init__()
         self.bert_projection = nn.Linear(bert_dim, fusion_dim)
@@ -263,42 +513,40 @@ class FeatureFusionLayer(nn.Module):
         self.dropout = nn.Dropout(0.2)
         
     def forward(self, bert_embedding, handcrafted_features):
-        # Check if inputs are 2D or 3D, and project
-        bert_proj = self.bert_projection(bert_embedding)            # [batch, fusion_dim] or [batch, seq, fusion_dim]
+        # Project both feature types to the same dimension
+        bert_proj = self.bert_projection(bert_embedding)
         handcrafted_proj = self.handcrafted_projection(handcrafted_features)
-
-        # Ensure 3D shape: [batch_size, seq_len, fusion_dim]
+        
+        # Ensure correct dimensions for attention (seq_len, batch_size, embed_dim)
+        # bert_proj and handcrafted_proj should be [batch_size, embed_dim]
         if bert_proj.dim() == 2:
-            bert_proj = bert_proj.unsqueeze(1)  # Add seq_len = 1
-        if handcrafted_proj.dim() == 2:
-            handcrafted_proj = handcrafted_proj.unsqueeze(1)
-
-        # Apply attention (batch_first=True)
-        attn_output, _ = self.attention(
-            bert_proj, handcrafted_proj, handcrafted_proj
-        )  # Output: [batch_size, seq_len, fusion_dim]
-
-        # Remove seq_len dim if it is 1
-        attn_output = attn_output.squeeze(1)
-        bert_proj = bert_proj.squeeze(1)
-        handcrafted_proj = handcrafted_proj.squeeze(1)
-
-        # Gated fusion
-        combined = torch.cat([bert_proj, handcrafted_proj], dim=-1)  # [batch_size, 2*fusion_dim]
+            # Reshape to [1, batch_size, embed_dim] for attention
+            bert_proj_attn = bert_proj.unsqueeze(0)  # [1, batch_size, embed_dim]
+            handcrafted_proj_attn = handcrafted_proj.unsqueeze(0)  # [1, batch_size, embed_dim]
+        else:
+            # Handle unexpected dimensions
+            bert_proj_attn = bert_proj.view(1, -1, bert_proj.size(-1))
+            handcrafted_proj_attn = handcrafted_proj.view(1, -1, handcrafted_proj.size(-1))
+        
+        # Cross-attention between features
+        attn_output, _ = self.attention(bert_proj_attn, handcrafted_proj_attn, handcrafted_proj_attn)
+        attn_output = attn_output.squeeze(0)  # Remove seq_len dimension
+        
+        # Calculate gate values for feature importance
+        combined = torch.cat([bert_proj, handcrafted_proj], dim=-1)
         gate_values = self.gate(combined)
+        
+        # Gated fusion
         fused = gate_values * bert_proj + (1 - gate_values) * handcrafted_proj
+        
+        # Normalization and dropout
         output = self.layer_norm(fused)
         output = self.dropout(output)
-
+        
         return output
 
-
-
+# Hierarchical attention (same as economics model)
 class HierarchicalAttention(nn.Module):
-    """
-    Hierarchical attention network for document classification
-    Implements word-level, sentence-level, and section-level attention
-    """
     def __init__(self, hidden_dim):
         super(HierarchicalAttention, self).__init__()
         
@@ -315,111 +563,95 @@ class HierarchicalAttention(nn.Module):
         self.section_layer_norm = nn.LayerNorm(hidden_dim)
         
     def forward(self, word_embeddings, attention_mask):
-        """
-        Args:
-            word_embeddings: [batch_size, max_sections, max_sents, max_words, hidden_dim]
-            attention_mask:  [batch_size, max_sections, max_sents, max_words]
-        """
         batch_size, max_sections, max_sents, max_words, hidden_dim = word_embeddings.shape
-        section_embeddings = []
+        doc_embeddings = []
 
         for b in range(batch_size):
-            sentence_embeddings = []
-
+            section_embeddings = []
             for s in range(max_sections):
-                sent_embeddings = []
-
+                sentence_embeddings = []
                 for i in range(max_sents):
-                    words = word_embeddings[b, s, i]           # [max_words, hidden_dim]
-                    mask = attention_mask[b, s, i]             # [max_words]
+                    words = word_embeddings[b, s, i]
+                    mask = attention_mask[b, s, i]
 
-                    if words.dim() == 3 and words.shape[0] == 1:
-                        words = words.squeeze(0)
                     if mask.sum() > 0:
-                        words = words.unsqueeze(1)  # [max_words, 1, hidden_dim]
-                        words=words
-                        key_padding_mask = (mask == 0).unsqueeze(0)  # [1, max_words]
+                        key_padding_mask = (mask == 0).unsqueeze(0)
+                        words = words.unsqueeze(1)
+                        words = words.transpose(0, 1)
+                        words = words.transpose(0, 1)
 
                         attn_output, _ = self.word_attention(
                             words, words, words,
                             key_padding_mask=key_padding_mask
                         )
-                        attn_output = attn_output.squeeze(1)  # [max_words, hidden_dim]
-
+                        attn_output = attn_output.squeeze(1)
                         sent_embedding = (attn_output * mask.unsqueeze(-1)).sum(dim=0) / (mask.sum() + 1e-10)
                     else:
-                        sent_embedding = torch.zeros(hidden_dim, device=words.device)
+                        sent_embedding = torch.zeros(hidden_dim, device=word_embeddings.device)
+                    sentence_embeddings.append(sent_embedding)
 
-                    sent_embeddings.append(sent_embedding)
-
-                if sent_embeddings:
-                    section_sent_embeddings = torch.stack(sent_embeddings)  # [max_sents, hidden_dim]
-                    sent_mask = (attention_mask[b, s].sum(dim=1) > 0).float()  # [max_sents]
+                if sentence_embeddings:
+                    section_sent_embeddings = torch.stack(sentence_embeddings)
+                    sent_mask = (attention_mask[b, s].sum(dim=1) > 0).float()
 
                     if sent_mask.sum() > 0:
-                        section_sent_embeddings = section_sent_embeddings.unsqueeze(1)  # [max_sents, 1, hidden_dim]
-                        key_padding_mask = (sent_mask == 0).unsqueeze(0)  # [1, max_sents]
+                        key_padding_mask = (sent_mask == 0).unsqueeze(0)
+                        section_sent_embeddings = section_sent_embeddings.unsqueeze(1)
+                        section_sent_embeddings = section_sent_embeddings.transpose(0, 1)
+                        section_sent_embeddings = section_sent_embeddings.transpose(0, 1)
 
-                        sent_attn_output, _ = self.sentence_attention(
+                        attn_output, _ = self.sentence_attention(
                             section_sent_embeddings, section_sent_embeddings, section_sent_embeddings,
                             key_padding_mask=key_padding_mask
                         )
-                        sent_attn_output = sent_attn_output.squeeze(1)
-
-                        section_embedding = (sent_attn_output * sent_mask.unsqueeze(-1)).sum(dim=0) / (sent_mask.sum() + 1e-10)
+                        attn_output = attn_output.squeeze(1)
+                        section_embedding = (attn_output * sent_mask.unsqueeze(-1)).sum(dim=0) / (sent_mask.sum() + 1e-10)
                     else:
-                        section_embedding = torch.zeros(hidden_dim, device=section_sent_embeddings.device)
+                        section_embedding = torch.zeros(hidden_dim, device=word_embeddings.device)
+                    section_embeddings.append(section_embedding)
                 else:
-                    section_embedding = torch.zeros(hidden_dim, device=word_embeddings.device)
+                    section_embeddings.append(torch.zeros(hidden_dim, device=word_embeddings.device))
 
-                sentence_embeddings.append(section_embedding)
-
-            if sentence_embeddings:
-                doc_section_embeddings = torch.stack(sentence_embeddings)  # [max_sections, hidden_dim]
-                section_mask = (attention_mask[b].sum(dim=(1, 2)) > 0).float()  # [max_sections]
+            if section_embeddings:
+                doc_section_embeddings = torch.stack(section_embeddings)
+                section_mask = (attention_mask[b].sum(dim=(1, 2)) > 0).float()
 
                 if section_mask.sum() > 0:
-                    doc_section_embeddings = doc_section_embeddings.unsqueeze(1)  # [max_sections, 1, hidden_dim]
-                    key_padding_mask = (section_mask == 0).unsqueeze(0)  # [1, max_sections]
+                    key_padding_mask = (section_mask == 0).unsqueeze(0)
+                    doc_section_embeddings = doc_section_embeddings.unsqueeze(1)
+                    doc_section_embeddings = doc_section_embeddings.transpose(0, 1)
+                    doc_section_embeddings = doc_section_embeddings.transpose(0, 1)
 
-                    section_attn_output, _ = self.section_attention(
+                    attn_output, _ = self.section_attention(
                         doc_section_embeddings, doc_section_embeddings, doc_section_embeddings,
                         key_padding_mask=key_padding_mask
                     )
-                    section_attn_output = section_attn_output.squeeze(1)
-
-                    doc_embedding = (section_attn_output * section_mask.unsqueeze(-1)).sum(dim=0) / (section_mask.sum() + 1e-10)
+                    attn_output = attn_output.squeeze(1)
+                    doc_embedding = (attn_output * section_mask.unsqueeze(-1)).sum(dim=0) / (section_mask.sum() + 1e-10)
                 else:
-                    doc_embedding = torch.zeros(hidden_dim, device=doc_section_embeddings.device)
+                    doc_embedding = torch.zeros(hidden_dim, device=word_embeddings.device)
             else:
                 doc_embedding = torch.zeros(hidden_dim, device=word_embeddings.device)
 
-            section_embeddings.append(doc_embedding)
+            doc_embeddings.append(doc_embedding)
 
-        return torch.stack(section_embeddings)
+        return torch.stack(doc_embeddings)
 
-
-# Main HierarchicalBiasPredictionModel class for GPU execution
-
-
-class HierarchicalBiasPredictionModel(nn.Module):
-    def __init__(self, bert_model_name, num_classes=3, dropout_rate=0.3, feature_dim=20):
-        super(HierarchicalBiasPredictionModel, self).__init__()
+# CS Bias Prediction Model
+class CSBiasPredictionModel(nn.Module):
+    def __init__(self, bert_model_name, num_classes=3, dropout_rate=0.3, feature_dim=25):
+        # Force num_classes to be exactly 3 for CS bias detection
+        if num_classes != 3:
+            print(f"WARNING: num_classes was {num_classes}, forcing to 3 for CS bias detection")
+            num_classes = 3
+        super(CSBiasPredictionModel, self).__init__()
         self.bert = AutoModel.from_pretrained(bert_model_name)
-        
-        # Enable gradient checkpointing to save memory with explicit reentrant setting
-        if hasattr(self.bert, 'gradient_checkpointing_enable'):
-            self.bert.gradient_checkpointing_enable()
-            # Set reentrant to False to avoid the warning
-            if hasattr(self.bert.config, 'use_reentrant'):
-                self.bert.config.use_reentrant = False
-        
         self.dropout = nn.Dropout(dropout_rate)
         
-        # Dimensions optimized for 4GB GPU
+        # Dimensions
         self.bert_dim = self.bert.config.hidden_size
         self.handcrafted_dim = feature_dim
-        self.fusion_dim = 256  # Balanced fusion dimension for learning
+        self.fusion_dim = 256
         
         # Hierarchical attention
         self.hierarchical_attention = HierarchicalAttention(hidden_dim=self.bert_dim)
@@ -431,187 +663,211 @@ class HierarchicalBiasPredictionModel(nn.Module):
             fusion_dim=self.fusion_dim
         )
         
-        # Classification layers - balanced for learning
-        self.fc1 = nn.Linear(self.fusion_dim, 128)  # Better capacity for learning
-        self.fc2 = nn.Linear(128, num_classes)
+        # Enhanced classification layers with residual connections
+        self.fc1 = nn.Linear(self.fusion_dim, 256)
+        self.fc2 = nn.Linear(256, 128)
+        self.fc3 = nn.Linear(128, num_classes)
+        
+        # Activation and normalization
         self.relu = nn.ReLU()
-        self.layer_norm = nn.LayerNorm(128)
+        self.gelu = nn.GELU()  # Better activation for transformers
+        self.layer_norm1 = nn.LayerNorm(256)
+        self.layer_norm2 = nn.LayerNorm(128)
+        
+        # Residual connection for fusion dimension matching
+        self.residual_proj = nn.Linear(self.fusion_dim, 128) if self.fusion_dim != 128 else nn.Identity()
         
     def forward(self, input_ids, attention_mask, handcrafted_features):
         batch_size = input_ids.size(0)
         
         # Reshape for BERT processing
-        # Original shape: [batch_size, max_sections, max_sents, max_seq_length]
         max_sections, max_sents, max_seq_length = input_ids.size(1), input_ids.size(2), input_ids.size(3)
         
-        # OPTIMIZED: Batch process all sentences at once instead of nested loops
-        # Reshape to process all sentences in a single BERT call
-        total_sentences = batch_size * max_sections * max_sents
-        
-        # Flatten input tensors
-        flat_input_ids = input_ids.view(total_sentences, max_seq_length)
-        flat_attention_mask = attention_mask.view(total_sentences, max_seq_length)
-        
-        # Find non-empty sentences to avoid processing padding
-        non_empty_mask = flat_attention_mask.sum(dim=1) > 0
-        
-        if non_empty_mask.sum() > 0:
-            # Process only non-empty sentences
-            non_empty_input_ids = flat_input_ids[non_empty_mask]
-            non_empty_attention_mask = flat_attention_mask[non_empty_mask]
+        # Process each sentence with BERT
+        word_embeddings = []
+        for b in range(batch_size):
+            section_embeddings = []
+            for s in range(max_sections):
+                sentence_embeddings = []
+                for i in range(max_sents):
+                    # Process single sentence through BERT
+                    input_ids_sent = input_ids[b, s, i].unsqueeze(0)
+                    attention_mask_sent = attention_mask[b, s, i].unsqueeze(0)
+                    
+                    # Skip processing empty sentences to save computation
+                    if attention_mask_sent.sum() > 0:
+                        outputs = self.bert(
+                            input_ids=input_ids_sent, 
+                            attention_mask=attention_mask_sent,
+                            output_hidden_states=True
+                        )
+                        
+                        # Get token embeddings from last layer
+                        token_embeddings = outputs.last_hidden_state[0]
+                    else:
+                        # Create zero embeddings for empty sentences
+                        token_embeddings = torch.zeros(
+                            max_seq_length, self.bert_dim, device=input_ids.device)
+                    
+                    sentence_embeddings.append(token_embeddings)
+                
+                # Stack to get all sentence embeddings for this section
+                section_embeddings.append(torch.stack(sentence_embeddings))
             
-            # Single BERT forward pass for all non-empty sentences
-            outputs = self.bert(
-                input_ids=non_empty_input_ids,
-                attention_mask=non_empty_attention_mask,
-                output_hidden_states=False  # Don't need hidden states, just last layer
+            # Stack to get all section embeddings for this document
+            word_embeddings.append(torch.stack(section_embeddings))
+        
+        # Stack to get embeddings for the entire batch
+        word_embeddings = torch.stack(word_embeddings)
+        
+        # Apply hierarchical attention
+        doc_embeddings = []
+        for b in range(batch_size):
+            doc_embedding = self.hierarchical_attention(
+                word_embeddings[b].unsqueeze(0),
+                attention_mask[b].unsqueeze(0)
             )
-            
-            # Get sentence-level embeddings using [CLS] token
-            sentence_embeddings = outputs.last_hidden_state[:, 0, :]  # [num_non_empty, hidden_size]
-        else:
-            sentence_embeddings = torch.empty(0, self.bert_dim, device=input_ids.device)
+            # Ensure doc_embedding is 1D (hidden_dim,)
+            if doc_embedding.dim() > 1:
+                doc_embedding = doc_embedding.squeeze()
+            doc_embeddings.append(doc_embedding)
         
-        # Create full embedding tensor and fill in non-empty sentences
-        all_sentence_embeddings = torch.zeros(total_sentences, self.bert_dim, device=input_ids.device)
-        if non_empty_mask.sum() > 0:
-            all_sentence_embeddings[non_empty_mask] = sentence_embeddings
-        
-        # Reshape back to hierarchical structure
-        doc_embeddings = all_sentence_embeddings.view(batch_size, max_sections, max_sents, self.bert_dim)
-        
-        # Simple aggregation instead of complex hierarchical attention for speed
-        # Average over sentences and sections
-        section_embeddings = doc_embeddings.mean(dim=2)  # Average sentences within sections
-        final_doc_embeddings = section_embeddings.mean(dim=1)  # Average sections within documents
+        # Stack to create [batch_size, hidden_dim]
+        doc_embeddings = torch.stack(doc_embeddings)
         
         # Feature fusion
-        fused_features = self.feature_fusion(final_doc_embeddings, handcrafted_features)
+        fused_features = self.feature_fusion(doc_embeddings, handcrafted_features)
         
-        # Final classification
-        x = self.fc1(fused_features)
-        x = self.relu(x)
-        x = self.layer_norm(x)
-        x = self.dropout(x)
-        output = self.fc2(x)
+        # Enhanced classification with residual connections
+        x1 = self.fc1(fused_features)
+        x1 = self.gelu(x1)  # GELU works better with transformers
+        x1 = self.layer_norm1(x1)
+        x1 = self.dropout(x1)
+        
+        x2 = self.fc2(x1)
+        x2 = self.gelu(x2)
+        x2 = self.layer_norm2(x2)
+        
+        # Add residual connection
+        residual = self.residual_proj(fused_features)
+        x2 = x2 + residual
+        
+        x2 = self.dropout(x2)
+        output = self.fc3(x2)
         
         return output
-    
-# Enhanced model training function with gradient accumulation and mixed precision
-def train_hierarchical_model(train_dataloader, val_dataloader, model, device, 
-                           epochs=2, lr=2e-5, accumulation_steps=4):
-    """Train the hierarchical model with gradient accumulation and mixed precision"""
+
+# Training function with gradient accumulation and class weighting
+def train_cs_model(train_dataloader, val_dataloader, model, device, 
+                   epochs=3, lr=4e-5, accumulation_steps=2, class_weights=None):
+    """Train the CS bias prediction model with enhanced imbalance handling"""
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs * len(train_dataloader))
-    loss_fn = nn.CrossEntropyLoss()
     
-    # Enable mixed precision training for GPU
-    use_amp = device.type == 'cuda'
-    scaler = torch.cuda.amp.GradScaler() if use_amp else None
-    if use_amp:
-        print("Using mixed precision training for GPU acceleration")
+    # Optimized learning schedule for 3 epochs maximum
+    warmup_steps = len(train_dataloader) // 4  # Shorter warmup for 3 epochs
+    total_steps = epochs * len(train_dataloader)
+    
+    def lr_lambda(current_step):
+        if current_step < warmup_steps:
+            # Faster linear warmup
+            return float(current_step) / float(max(1, warmup_steps))
+        else:
+            # More aggressive cosine annealing for 3 epochs
+            progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+            return max(0.1, 0.5 * (1.0 + np.cos(np.pi * progress)))  # Don't go below 10% of max LR
+    
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    
+    # Use CrossEntropyLoss with class weights and label smoothing
+    if class_weights is not None:
+        class_weights_tensor = torch.tensor(class_weights, dtype=torch.float32).to(device)
+        loss_fn = nn.CrossEntropyLoss(weight=class_weights_tensor, label_smoothing=0.1)
+        print(f"Using CrossEntropyLoss with class weights and label smoothing (0.1)")
+    else:
+        loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
     
     best_val_accuracy = 0
     best_model = None
+    patience = 1  # Minimal patience for 3 epochs maximum
+    patience_counter = 0
+    min_improvement = 0.005  # Higher improvement threshold for aggressive training
     
     for epoch in range(epochs):
-        print(f"\nStarting epoch {epoch+1}/{epochs}...")
         # Training
         model.train()
         train_loss = 0
-        optimizer.zero_grad()  # Zero gradients at the beginning of epoch
-        
-        print(f"Processing {len(train_dataloader)} training batches...")
+        optimizer.zero_grad()
         
         for batch_idx, batch in enumerate(train_dataloader):
-            # Print progress every 10 batches
-            if batch_idx % 10 == 0:
-                print(f"  Epoch {epoch+1}/{epochs} - Processing batch {batch_idx+1}/{len(train_dataloader)}...")
+            # Aggressive memory management for GTX 1650
+            if torch.cuda.is_available():
+                if batch_idx % 3 == 0:  # Clear cache every 3 batches
+                    torch.cuda.empty_cache()
+                if batch_idx % 10 == 0:  # Synchronize every 10 batches
+                    torch.cuda.synchronize()
             
-            # Clear cache less frequently for speed
-            if device.type == 'cuda' and batch_idx % 25 == 0:  # Clear every 25 batches
-                clear_gpu_cache(f"Batch {batch_idx}")
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            handcrafted_features = batch['handcrafted_features'].to(device)
+            labels = batch['label'].to(device)
             
             try:
-                input_ids = batch['input_ids'].to(device)
-                attention_mask = batch['attention_mask'].to(device)
-                handcrafted_features = batch['handcrafted_features'].to(device)
-                labels = batch['label'].to(device)
+                outputs = model(input_ids, attention_mask, handcrafted_features)
+                loss = loss_fn(outputs, labels)
+                loss = loss / accumulation_steps
                 
-                # Debug: Print tensor shapes
-                if batch_idx == 0:
-                    print(f"    Input shapes: input_ids={input_ids.shape}, attention_mask={attention_mask.shape}")
-                    print(f"    Features shape: {handcrafted_features.shape}, Labels shape: {labels.shape}")
-            except Exception as e:
-                print(f"Error loading batch {batch_idx}: {e}")
-                continue
-            
-            # Mixed precision forward pass
-            if use_amp:
-                try:
-                    with torch.cuda.amp.autocast():
-                        if batch_idx == 0:
-                            print(f"    Running forward pass...")
-                        outputs = model(input_ids, attention_mask, handcrafted_features)
-                        if batch_idx == 0:
-                            print(f"    Forward pass completed, output shape: {outputs.shape}")
-                        loss = loss_fn(outputs, labels)
-                        loss = loss / accumulation_steps  # Normalize loss
-                except Exception as e:
-                    print(f"Error in forward pass (batch {batch_idx}): {e}")
-                    if device.type == 'cuda':
-                        torch.cuda.empty_cache()
-                    continue
-                
-                scaler.scale(loss).backward()
-                train_loss += loss.item() * accumulation_steps  # Re-scale for logging
-                
-                # Accumulate gradients and update at intervals
-                if (batch_idx + 1) % accumulation_steps == 0:
-                    scaler.step(optimizer)
-                    scaler.update()
-                    scheduler.step()
+                # Check for NaN/Inf before backward pass
+                if torch.isnan(loss) or torch.isinf(loss):
+                    print(f"WARNING: Invalid loss detected at batch {batch_idx}, skipping...")
                     optimizer.zero_grad()
-                    # Clear cache after optimizer step for 4GB GPU
-                    if device.type == 'cuda':
-                        clear_gpu_cache("After Optimizer Step")
-            else:
-                try:
-                    if batch_idx == 0:
-                        print(f"    Running forward pass (CPU mode)...")
-                    outputs = model(input_ids, attention_mask, handcrafted_features)
-                    if batch_idx == 0:
-                        print(f"    Forward pass completed, output shape: {outputs.shape}")
-                    loss = loss_fn(outputs, labels)
-                    loss = loss / accumulation_steps  # Normalize loss
-                except Exception as e:
-                    print(f"Error in forward pass (batch {batch_idx}): {e}")
                     continue
                 
                 loss.backward()
-                train_loss += loss.item() * accumulation_steps  # Re-scale for logging
+                train_loss += loss.item() * accumulation_steps
+                
+                # Free intermediate tensors to save memory
+                del outputs, loss
+                
+                # Clear GPU cache more aggressively
+                if torch.cuda.is_available() and batch_idx % 2 == 0:
+                    torch.cuda.empty_cache()
                 
                 # Accumulate gradients and update at intervals
                 if (batch_idx + 1) % accumulation_steps == 0:
                     optimizer.step()
                     scheduler.step()
                     optimizer.zero_grad()
-                    # Clear cache after optimizer step for 4GB GPU
-                    if device.type == 'cuda':
-                        clear_gpu_cache("After Optimizer Step")
+                    
+                    # Clear cache after gradient updates
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        
+            except RuntimeError as e:
+                if "out of memory" in str(e):
+                    print(f"OOM at batch {batch_idx}. Clearing cache and skipping batch...")
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    optimizer.zero_grad()
+                    continue
+                else:
+                    raise e
+            
+            # More frequent progress reporting for debugging slow training
+            if batch_idx % 5 == 0:  # Report every 5 batches instead of 20
+                if torch.cuda.is_available():
+                    memory_used = torch.cuda.memory_allocated() / 1024**3
+                    memory_cached = torch.cuda.memory_reserved() / 1024**3
+                    print(f"Batch {batch_idx}/{len(train_dataloader)}: GPU Memory - Used: {memory_used:.2f}GB, Cached: {memory_cached:.2f}GB")
+                else:
+                    print(f"Batch {batch_idx}/{len(train_dataloader)}: Processing...")
         
         # Handle any remaining gradients at the end of epoch
         if len(train_dataloader) % accumulation_steps != 0:
-            if use_amp:
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                optimizer.step()
+            optimizer.step()
             scheduler.step()
         
         train_loss /= len(train_dataloader)
         
-        print(f"\nStarting validation for epoch {epoch+1}...")
         # Validation
         model.eval()
         val_loss = 0
@@ -620,908 +876,534 @@ def train_hierarchical_model(train_dataloader, val_dataloader, model, device,
         
         with torch.no_grad():
             for val_batch_idx, batch in enumerate(val_dataloader):
-                # Clear cache before validation batch for 4GB GPU
-                if device.type == 'cuda' and val_batch_idx % 10 == 0:  # Clear every 10 validation batches
-                    clear_gpu_cache(f"Validation Batch {val_batch_idx}")
+                # Memory management during validation
+                if torch.cuda.is_available() and val_batch_idx % 3 == 0:
+                    torch.cuda.empty_cache()
                 
-                try:
-                    input_ids = batch['input_ids'].to(device)
-                    attention_mask = batch['attention_mask'].to(device)
-                    handcrafted_features = batch['handcrafted_features'].to(device)
-                    labels = batch['label'].to(device)
-                except Exception as e:
-                    print(f"Error loading validation batch {val_batch_idx}: {e}")
-                    continue
+                input_ids = batch['input_ids'].to(device)
+                attention_mask = batch['attention_mask'].to(device)
+                handcrafted_features = batch['handcrafted_features'].to(device)
+                labels = batch['label'].to(device)
                 
                 try:
                     outputs = model(input_ids, attention_mask, handcrafted_features)
                     loss = loss_fn(outputs, labels)
-                except Exception as e:
-                    print(f"Error in validation forward pass (batch {val_batch_idx}): {e}")
-                    if device.type == 'cuda':
-                        torch.cuda.empty_cache()
-                    continue
-                
-                val_loss += loss.item()
-                
-                _, predicted = torch.max(outputs, 1)
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
+                    
+                    val_loss += loss.item()
+                    
+                    _, predicted = torch.max(outputs, 1)
+                    total += labels.size(0)
+                    correct += (predicted == labels).sum().item()
+                    
+                    # Free memory
+                    del outputs, loss, predicted
+                    
+                except RuntimeError as e:
+                    if "out of memory" in str(e):
+                        print(f"OOM during validation batch {val_batch_idx}. Skipping...")
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        continue
+                    else:
+                        raise e
         
         val_loss /= len(val_dataloader)
         val_accuracy = correct / total
+        
+        # Calculate per-class metrics for better monitoring (fixed to 3 classes)
+        class_correct = torch.zeros(3).to(device)  # Fixed to 3 classes
+        class_total = torch.zeros(3).to(device)    # Fixed to 3 classes
+        
+        with torch.no_grad():
+            for pc_batch_idx, batch in enumerate(val_dataloader):
+                # Memory management for per-class calculation
+                if torch.cuda.is_available() and pc_batch_idx % 2 == 0:
+                    torch.cuda.empty_cache()
+                
+                input_ids = batch['input_ids'].to(device)
+                attention_mask = batch['attention_mask'].to(device)
+                handcrafted_features = batch['handcrafted_features'].to(device)
+                labels = batch['label'].to(device)
+                
+                try:
+                    outputs = model(input_ids, attention_mask, handcrafted_features)
+                    _, predicted = torch.max(outputs, 1)
+                    
+                    for i in range(len(labels)):
+                        label = labels[i]
+                        class_total[label] += 1
+                        if predicted[i] == label:
+                            class_correct[label] += 1
+                    
+                    # Free memory
+                    del outputs, predicted
+                    
+                except RuntimeError as e:
+                    if "out of memory" in str(e):
+                        print(f"OOM during per-class calculation batch {pc_batch_idx}. Skipping...")
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        continue
+                    else:
+                        raise e
+        
+        # Calculate per-class accuracy (avoid division by zero)
+        class_accuracies = []
+        for i in range(len(class_correct)):
+            if class_total[i] > 0:
+                acc = (class_correct[i] / class_total[i]).item()
+                class_accuracies.append(acc)
+            else:
+                class_accuracies.append(0.0)
+        
+        # Use balanced accuracy (mean of per-class accuracies) as main metric
+        balanced_accuracy = np.mean(class_accuracies)
         
         print(f'Epoch {epoch+1}/{epochs}: '
               f'Train Loss = {train_loss:.4f}, '
               f'Val Loss = {val_loss:.4f}, '
               f'Val Accuracy = {val_accuracy:.4f}, '
+              f'Balanced Acc = {balanced_accuracy:.4f}, '
               f'LR = {scheduler.get_last_lr()[0]:.6f}')
+        print(f'Per-class accuracies: {[f"{acc:.3f}" for acc in class_accuracies]}')
         
-        if val_accuracy > best_val_accuracy:
-            best_val_accuracy = val_accuracy
+        # Check if model is stuck predicting only one class
+        non_zero_classes = sum(1 for acc in class_accuracies if acc > 0.001)
+        print(f'Classes with non-zero accuracy: {non_zero_classes}/{len(class_accuracies)}')
+        
+        # Save model based on balanced accuracy (better for imbalanced datasets)
+        # Relax condition to allow single-class models initially
+        if balanced_accuracy > best_val_accuracy + min_improvement:
+            improvement = balanced_accuracy - best_val_accuracy
+            best_val_accuracy = balanced_accuracy
             best_model = model.state_dict().copy()
-            torch.save(best_model, 'best_hierarchical_model.pt')
+            torch.save(best_model, 'best_cs_bias_model.pt')
+            print(f'New best model saved with balanced accuracy: {balanced_accuracy:.4f} (improvement: +{improvement:.4f})')
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if non_zero_classes <= 1:
+                print(f'WARNING: Model is only predicting {non_zero_classes} class(es)! This indicates severe overfitting to majority class.')
+            print(f'No significant improvement for {patience_counter} epochs (current: {balanced_accuracy:.4f}, best: {best_val_accuracy:.4f})')
+            
+        # Early stopping based on patience
+        if patience_counter >= patience:
+            print(f'Early stopping triggered after {patience} epochs without improvement')
+            break
     
-    # Load best model
-    model.load_state_dict(best_model)
+    # Load best model (handle case where no model was saved)
+    if best_model is not None:
+        model.load_state_dict(best_model)
+        print("Loaded best model from training")
+    else:
+        print("No best model was saved (no improvement detected), using final model state")
     return model
 
-# Enhanced evaluation function with computer science-specific metrics
-def evaluate_hierarchical_model(test_dataloader, model, device, label_names, feature_names=None):
-    """Evaluate model on test set with computer science-specific analysis"""
-    model.eval()
-    all_preds = []
-    all_labels = []
+# Load CS papers from JSON
+def load_cs_papers_from_json(json_file_path):
+    """Load CS research papers from JSON file with dynamic bias mapping"""
     
-    with torch.no_grad():
-        for batch in test_dataloader:
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
-            handcrafted_features = batch['handcrafted_features'].to(device)
-            labels = batch['label'].to(device)
-            
-            outputs = model(input_ids, attention_mask, handcrafted_features)
-            _, predicted = torch.max(outputs, 1)
-            
-            all_preds.extend(predicted.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
-    
-    # Calculate metrics
-    unique_preds = np.unique(all_preds)
-    unique_labels = np.unique(all_labels)
-    print(f"Unique predictions: {unique_preds}")
-    print(f"Unique labels in test set: {unique_labels}")
-    
-    # Use only the labels that are present in the data
-    present_labels = sorted(set(np.concatenate([unique_preds, unique_labels])))
-    filtered_label_names = [label_names[i] for i in present_labels] if present_labels else label_names[:1]
-    
-    try:
-        # Classification report
-        report = classification_report(all_labels, all_preds, 
-                               target_names=filtered_label_names,
-                               labels=present_labels,
-                               output_dict=True)
-        
-        print(classification_report(all_labels, all_preds, 
-                               target_names=filtered_label_names,
-                               labels=present_labels))
-        
-        # Plot classification report as heatmap
-        plt.figure(figsize=(10, 6))
-        report_data = []
-        for label in filtered_label_names:
-            report_data.append([
-                report[label]['precision'],
-                report[label]['recall'],
-                report[label]['f1-score']
-            ])
-        
-        sns.heatmap(
-            report_data, 
-            annot=True,
-            cmap='Blues',
-            xticklabels=['Precision', 'Recall', 'F1-Score'],
-            yticklabels=filtered_label_names
-        )
-        plt.title('Classification Performance by Bias Type')
-        plt.tight_layout()
-        plt.savefig('classification_performance.png')
-        plt.close()
-        
-    except ValueError as e:
-        print(f"Error generating classification report: {e}")
-        print("Falling back to basic accuracy calculation")
-        accuracy = sum(p == l for p, l in zip(all_preds, all_labels)) / len(all_labels) if all_labels else 0
-        print(f"Accuracy: {accuracy:.4f}")
-    
-    # Plot confusion matrix if we have multiple classes
-    if len(present_labels) > 1:
-        cm = confusion_matrix(all_labels, all_preds, labels=present_labels)
-        plt.figure(figsize=(10, 8))
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
-                    xticklabels=[label_names[i] for i in present_labels],
-                    yticklabels=[label_names[i] for i in present_labels])
-        plt.xlabel('Predicted')
-        plt.ylabel('True')
-        plt.title('Confusion Matrix')
-        plt.savefig('confusion_matrix.png')
-        plt.close()
-        
-        # Create normalized confusion matrix
-        cm_norm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
-        plt.figure(figsize=(10, 8))
-        sns.heatmap(cm_norm, annot=True, fmt='.2f', cmap='Blues', 
-                    xticklabels=[label_names[i] for i in present_labels],
-                    yticklabels=[label_names[i] for i in present_labels])
-        plt.xlabel('Predicted')
-        plt.ylabel('True')
-        plt.title('Normalized Confusion Matrix')
-        plt.savefig('normalized_confusion_matrix.png')
-        plt.close()
-    else:
-        print("Not enough unique classes in test set to generate a meaningful confusion matrix")
-    
-    # Analyze feature importance if feature names are provided
-    if feature_names is not None:
-        # Feature analysis will be implemented in a separate function
-        pass
-    
-    return all_preds, all_labels
-
-def load_papers_from_json(json_file_path):
-    """
-    Load computer science research papers from a JSON file.
-    Simplified to work specifically with your dataset structure.
-    """
-    import pandas as pd
-    import json
-    import os
-    
-    # Check if file exists
     if not os.path.exists(json_file_path):
         print(f"Error: File {json_file_path} not found.")
-        return pd.DataFrame(columns=['text', 'label'])
+        return pd.DataFrame(columns=['text', 'label', 'reason']), {}
     
     try:
-        # Load JSON data
         with open(json_file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
         papers = []
+        bias_types = set()
         
-        # Your data is a list of paper dictionaries
-        for i, paper in enumerate(data):
+        for paper in data:
             if not isinstance(paper, dict):
-                print(f"Warning: Item at index {i} is not a dictionary. Skipping.")
-                continue
-                
-            # Extract Body and Reason fields only
-            body_text = paper.get('Body', '')
-            reason_text = paper.get('Reason', '')
-            
-            # Process Reason field: split by semicolon and clean up
-            if reason_text and isinstance(reason_text, str):
-                # Split by semicolon and clean each reason
-                reasons = [reason.strip().lstrip('+') for reason in reason_text.split(';') if reason.strip()]
-                reason_processed = '; '.join(reasons)
-            else:
-                reason_processed = ''
-            
-            # Combine Body and Reason as input text
-            if body_text and reason_processed:
-                text = f"{body_text}\n\nRetraction Reasons: {reason_processed}"
-            elif body_text:
-                text = body_text
-            elif reason_processed:
-                text = f"Retraction Reasons: {reason_processed}"
-            else:
-                text = ''
-            
-            # Extract label from 'Overall Bias' or 'OverallBias' field
-            label = paper.get('Overall Bias') or paper.get('OverallBias')
-            
-            # Skip papers with missing, empty, or NaN labels
-            if label is None or label == "" or (isinstance(label, float) and pd.isna(label)):
-                print(f"Warning: Skipping paper at index {i} - missing/empty/NaN bias label")
                 continue
             
-            # Convert labels to integers
-            if label == 'No Bias':
-                label = 0
-            elif label == 'Cognitive Bias':
-                label = 1
-            elif label == 'Publication Bias':
-                label = 2
-            else:
-                print(f"Warning: Skipping paper at index {i} - unknown bias label '{label}'")
+            # Extract text (Body field)
+            text = paper.get('Body', '')
+            if not text:
                 continue
             
-            # Skip papers with empty text
-            if not text or text.strip() == "":
-                print(f"Warning: Skipping paper at index {i} - empty text content")
+            # Extract bias label (handle both "Overall Bias" and "OverallBias" field names)
+            bias_label = paper.get('Overall Bias') or paper.get('OverallBias')
+            if not bias_label:
+                print(f"Warning: Paper missing both 'Overall Bias' and 'OverallBias' fields: {paper.get('Title', 'Unknown')}")
                 continue
+            bias_types.add(bias_label)
             
-            papers.append({'text': text, 'label': label})
+            # Extract reason
+            reason = paper.get('Reason', '')
+            
+            papers.append({
+                'text': text,
+                'bias_label': bias_label,
+                'reason': reason
+            })
         
-        # Create DataFrame
+        # Use fixed label mapping for the 3 expected classes
+        label_mapping = {
+            'No Bias': 0,
+            'Cognitive Bias': 1, 
+            'Publication Bias': 2
+        }
+        
+        # Filter out any unexpected labels
+        expected_labels = set(label_mapping.keys())
+        unique_bias_types = sorted(list(bias_types.intersection(expected_labels)))
+        
+        print(f"Expected labels: {expected_labels}")
+        print(f"Found labels: {bias_types}")
+        
+        # Warn about unexpected labels
+        unexpected_labels = bias_types - expected_labels
+        if unexpected_labels:
+            print(f"WARNING: Found unexpected labels that will be filtered out: {unexpected_labels}")
+        
+        # Convert to DataFrame with numeric labels
         df = pd.DataFrame(papers)
+        df['label'] = df['bias_label'].map(label_mapping)
         
-        if len(df) == 0:
-            print(f"Warning: No valid paper data found in {json_file_path}")
-            return pd.DataFrame(columns=['text', 'label'])
+        # Remove papers with unmapped labels (NaN values)
+        original_count = len(df)
+        df = df.dropna(subset=['label'])
+        filtered_count = len(df)
         
-        # Quick validation
-        print(f"\n=== DATA VALIDATION ===")
-        sample_check = min(3, len(papers))
-        reason_count = sum(1 for i in range(sample_check) if "Retraction Reasons:" in papers[i]['text'])
-        print(f"Papers with Reason field: {reason_count}/{sample_check}")
-        print(f"✅ Data loaded successfully")
-        print(f"=== END VALIDATION ===\n")
+        if original_count != filtered_count:
+            print(f"Filtered out {original_count - filtered_count} papers with unexpected labels")
         
-        # Final summary
-        final_counts = df['label'].value_counts().sort_index()
-        print(f"Successfully loaded {len(df)} papers from {json_file_path}")
-        print(f"Label distribution:")
-        label_names = {0: 'No Bias', 1: 'Cognitive Bias', 2: 'Publication Bias'}
-        for label_num, count in final_counts.items():
-            print(f"  {label_names[label_num]} ({label_num}): {count} papers")
+        # Convert labels to integers
+        df['label'] = df['label'].astype(int)
         
-        return df
+        print(f"Successfully loaded {len(df)} CS papers from {json_file_path}")
+        print(f"Bias types found: {unique_bias_types}")
+        print(f"Label mapping: {label_mapping}")
         
-    except json.JSONDecodeError as e:
-        print(f"Error: {json_file_path} is not a valid JSON file: {str(e)}")
-        return pd.DataFrame(columns=['text', 'label'])
+        # Print class distribution
+        print("Full dataset class distribution:")
+        print(df['bias_label'].value_counts())
+        
+        return df, label_mapping
+        
     except Exception as e:
         print(f"Error loading papers from {json_file_path}: {str(e)}")
-        return pd.DataFrame(columns=['text', 'label'])
-
-# Function to analyze computer science-specific feature importance
-def analyze_cs_feature_importance(model, feature_names):
-    """
-    Analyze which computer science-specific features are most important for bias detection
-    Uses the weights from the feature fusion layer
-    """
-    # Extract feature fusion layer weights
-    weights = model.feature_fusion.handcrafted_projection.weight.detach().cpu().numpy()
-    
-    # Calculate feature importance as the L2 norm of the weights for each feature
-    importance = np.linalg.norm(weights, axis=0)
-    
-    # Create a DataFrame for visualization
-    importance_df = pd.DataFrame({
-        'Feature': feature_names,
-        'Importance': importance
-    }).sort_values('Importance', ascending=False)
-    
-    # Plot feature importance
-    plt.figure(figsize=(12, 8))
-    sns.barplot(x='Importance', y='Feature', data=importance_df)
-    plt.title('Computer Science-Specific Feature Importance for Bias Detection')
-    plt.tight_layout()
-    plt.savefig('cs_feature_importance.png')
-    plt.close()
-    
-    # Plot feature importance by category
-    # Group features by category
-    feature_categories = {
-        'Basic Text': ['length', 'avg_word_length'],
-        'Statistical': ['p_value_count', 'signif_stars_count', 'performance_count', 'results_performance_density'],
-        'Linguistic': ['hedge_ratio', 'certainty_ratio'],
-        'CS-Specific': ['theory_term_ratio', 'jargon_term_ratio', 'cs_method_count'],
-        'Section Analysis': ['abstract_claim_ratio', 'claim_consistency'],
-        'Rigor': ['limitations_mentioned', 'evaluation_ratio'],
-        'Visual/Tables': ['figure_mentions', 'table_mentions'],
-        'Comparison': ['comparison_count', 'self_reference_count']
-    }
-    
-    category_importance = {}
-    for category, features in feature_categories.items():
-        indices = [feature_names.index(f) for f in features if f in feature_names]
-        if indices:
-            category_importance[category] = importance[indices].mean()
-    
-    # Create DataFrame for category importance
-    category_df = pd.DataFrame({
-        'Category': list(category_importance.keys()),
-        'Average Importance': list(category_importance.values())
-    }).sort_values('Average Importance', ascending=False)
-    
-    plt.figure(figsize=(12, 6))
-    sns.barplot(x='Average Importance', y='Category', data=category_df)
-    plt.title('Feature Category Importance for Computer Science Research Bias Detection')
-    plt.tight_layout()
-    plt.savefig('cs_feature_category_importance.png')
-    plt.close()
-    
-    return importance_df, category_df
-
-# Add a utility function to monitor memory usage
-def print_memory_usage(stage=""):
-    # Get CPU memory info
-    process = psutil.Process(os.getpid())
-    mem_info = process.memory_info()
-    mem_mb = mem_info.rss / 1024 / 1024  # Convert to MB
-    
-    stage_prefix = f"[{stage}] " if stage else ""
-    print(f"{stage_prefix}CPU Memory Usage: {mem_mb:.2f} MB")
-    
-    # GPU memory info if available
-    if torch.cuda.is_available():
-        gpu_memory = torch.cuda.memory_allocated() / 1024 / 1024  # Convert to MB
-        gpu_memory_cached = torch.cuda.memory_reserved() / 1024 / 1024
-        gpu_memory_peak = torch.cuda.max_memory_allocated() / 1024 / 1024
-        total_gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024 / 1024
-        
-        print(f"{stage_prefix}GPU Memory Allocated: {gpu_memory:.2f} MB")
-        print(f"{stage_prefix}GPU Memory Reserved: {gpu_memory_cached:.2f} MB")
-        print(f"{stage_prefix}GPU Memory Peak: {gpu_memory_peak:.2f} MB")
-        print(f"{stage_prefix}GPU Memory Usage: {(gpu_memory_cached/total_gpu_memory)*100:.1f}% of {total_gpu_memory:.0f} MB")
-    
-    # Force garbage collection
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-def clear_gpu_cache(stage=""):
-    """Comprehensive GPU cache clearing with status reporting"""
-    if torch.cuda.is_available():
-        stage_prefix = f"[{stage}] " if stage else ""
-        print(f"{stage_prefix}Clearing GPU cache...")
-        
-        # Get memory before clearing
-        before_allocated = torch.cuda.memory_allocated() / 1024 / 1024
-        before_reserved = torch.cuda.memory_reserved() / 1024 / 1024
-        
-        # Clear cache
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
-        gc.collect()
-        
-        # Get memory after clearing
-        after_allocated = torch.cuda.memory_allocated() / 1024 / 1024
-        after_reserved = torch.cuda.memory_reserved() / 1024 / 1024
-        
-        freed_allocated = before_allocated - after_allocated
-        freed_reserved = before_reserved - after_reserved
-        
-        if freed_allocated > 0 or freed_reserved > 0:
-            print(f"{stage_prefix}Freed {freed_allocated:.1f} MB allocated, {freed_reserved:.1f} MB reserved")
-        else:
-            print(f"{stage_prefix}Cache already clean")
+        return pd.DataFrame(columns=['text', 'label', 'reason']), {}
 
 def main():
-    # Clear GPU cache at startup for clean memory state
-    if torch.cuda.is_available():
-        print("Clearing GPU cache from previous runs...")
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
-        # Force garbage collection
-        gc.collect()
-        print("GPU cache cleared successfully!")
+    """
+    CS Bias Detection Training - Single Dataset Approach
     
-    # Configure CUDA memory management for 4GB GPU
-    if torch.cuda.is_available():
-        # Set memory fraction to avoid fragmentation
-        torch.cuda.set_per_process_memory_fraction(0.8)  # Use 80% of GPU memory
-        # Clear any existing cache again after configuration
-        torch.cuda.empty_cache()
-        # Set memory allocation configuration
-        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
+    Uses computer_science_papers.json as main dataset with 80/20 train/validation split.
+    No separate test files needed - validation accuracy shows true performance.
     
-    # Use GPU if available, otherwise CPU
+    IMPORTANT: All data processing happens in-memory only. Original files never changed.
+    
+    Optimizations for 3 epochs:
+    - Single dataset with clean train/validation split
+    - Enhanced learning rate scheduling with warmup + cosine annealing
+    - Improved model architecture with residual connections and GELU activation
+    - SMOTE balancing (in-memory only, never saves to files)
+    - Optimized batch size and gradient accumulation
+    """
+    # Set up device with memory management for GTX 1650
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
+    
     if torch.cuda.is_available():
         print(f"GPU: {torch.cuda.get_device_name(0)}")
-        total_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
-        print(f"GPU Memory: {total_memory:.1f} GB")
-        if total_memory < 6.0:  # Less than 6GB
-            print("WARNING: Low GPU memory detected. Using memory-optimized settings.")
+        print(f"Total GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+        print(f"Available GPU memory: {torch.cuda.memory_reserved(0) / 1024**3:.1f} GB")
+        
+        # Clear cache and set memory management
+        torch.cuda.empty_cache()
+        torch.backends.cudnn.benchmark = True  # Optimize for consistent input sizes
+        
+        # Enable memory-efficient settings for GTX 1650
+        if hasattr(torch.backends.cudnn, 'allow_tf32'):
+            torch.backends.cudnn.allow_tf32 = True
+        if hasattr(torch.backends.cuda, 'matmul'):
+            torch.backends.cuda.matmul.allow_tf32 = True
     
-    # Feature names for the dynamic academic paper analyzer
+    # Feature names for the CS-specific extractor
     feature_names = [
-        'length', 'avg_word_length', 'p_value_count', 'significance_stars', 'numeric_density',
-        'hedge_density', 'certainty_density', 'claim_density', 'self_reference_count', 
-        'comparison_count', 'evaluation_mentions', 'has_limitations', 'visual_elements'
+        'length', 'avg_word_length', 'p_value_count', 'significance_stars_count',
+        'performance_metrics_count', 'hedge_ratio', 'certainty_ratio', 'theory_term_ratio',
+        'jargon_term_ratio', 'cs_method_count', 'abstract_claim_ratio',
+        'results_metric_density', 'limitations_mentioned', 'experimental_rigor_ratio',
+        'claim_consistency', 'figure_mentions', 'table_mentions', 'citation_count', 
+        'self_citation_count', 'fake_peer_review', 'data_issues', 'paper_mill',
+        'authorship_issues', 'duplication_issues', 'reproducibility_mentions'
     ]
     
-    # Load and process paper data from JSON
-    try:
-        # Specify the path to your papers JSON file
-        papers_df = load_papers_from_json('cs_train.json')
-        print(f"Loaded {len(papers_df)} papers")
-        
-        # Check class distribution
-        print("Class distribution:")
-        class_counts = papers_df['label'].value_counts()
-        print(class_counts)
-        
-        # If there's insufficient data, create some dummy data for testing
-        if len(papers_df) <= 3:  # Need at least 3 for train/val/test
-            print("Warning: Not enough data found. Creating dummy data for testing.")
-            # Create dummy data
-            papers_df = pd.DataFrame({
-                'text': ['This is a sample computer science research paper with accuracy = 0.95 and significant results.'] * 10,
-                'label': [0, 1, 2, 0, 1, 2, 0, 1, 2, 0]  # Dummy labels
-            })
-    except Exception as e:
-        print(f"Error loading papers: {e}")
-        # Generate dummy data for testing
-        papers_df = pd.DataFrame({
-            'text': ['This is a sample computer science research paper with accuracy = 0.95 and significant results.'] * 10,
-            'label': [0, 1, 2, 0, 1, 2, 0, 1, 2, 0]  # Dummy labels
-        })
+    # Load and process CS paper data from main dataset
+    papers_df, label_mapping = load_cs_papers_from_json('computer_science_papers.json')
     
-    # Extract handcrafted features with computer science-specific extractor
-    print("Extracting computer science-specific handcrafted features...")
-    extractor = DynamicAcademicFeatureExtractor()
+    if len(papers_df) == 0:
+        print("Error: No papers loaded. Please check the data file.")
+        return
+    
+    # Extract handcrafted features with CS-specific extractor
+    print("Extracting CS-specific handcrafted features...")
+    extractor = CSBiasFeatureExtractor()
     handcrafted_features = []
     
     for _, row in papers_df.iterrows():
-        features = extractor.extract_features(row['text'])
+        features = extractor.extract_features(row['text'], row['reason'])
         handcrafted_features.append(features)
     
     # Convert to numpy arrays
     features_array = np.array(handcrafted_features, dtype=np.float32)
     labels_array = np.array(papers_df['label'], dtype=np.int64)
     
-    print(f"\nTotal papers loaded from cs_train.json: {len(papers_df)}")
-    print(f"Class distribution in cs_train.json:")
-    for i, count in enumerate(papers_df['label'].value_counts().sort_index()):
-        class_names = ['No Bias', 'Cognitive Bias', 'Publication Bias']
-        print(f"  {class_names[i]}: {count} papers ({count/len(papers_df)*100:.1f}%)")
+    # Split into train and validation from main dataset
+    # Use 80/20 split for train/validation (no separate test file needed)
+    train_texts, val_texts, train_features, val_features, train_labels, val_labels = train_test_split(
+        papers_df['text'].tolist(), features_array, labels_array,
+        test_size=0.2, random_state=42, stratify=labels_array
+    )
     
-    # ⚠️ CRITICAL CHECK: Verify we have balanced classes
-    unique_labels = papers_df['label'].unique()
-    print(f"Unique labels found: {sorted(unique_labels)}")
-    if len(unique_labels) == 1:
-        print("🚨 CRITICAL ISSUE: All labels are the same! Model will only learn one class.")
-        print("This explains the 57% accuracy issue.")
-    elif len(unique_labels) < 3:
-        print(f"⚠️ WARNING: Only {len(unique_labels)} classes found. Missing some bias types.")
-    else:
-        print("✅ Good: All 3 classes present.")
+    print(f"Training set size: {len(train_texts)}")
+    print(f"Validation set size: {len(val_texts)}")
     
-    # Use entire cs_train.json for training and validation only
-    # Split into training (80%) and validation (20%) sets
+    # Show training set distribution before any SMOTE
+    print("\n" + "="*60)
+    print("📊 TRAINING SET DISTRIBUTION (80% of main dataset):")
+    print("="*60)
+    train_counts = Counter(train_labels)
+    train_total = len(train_labels)
+    for label_idx in sorted(train_counts.keys()):
+        count = train_counts[label_idx]
+        percentage = (count / train_total) * 100
+        label_names = {0: 'No Bias', 1: 'Cognitive Bias', 2: 'Publication Bias'}
+        label_name = label_names.get(label_idx, f'Class {label_idx}')
+        print(f"  {label_name:<18}: {count:>5} samples ({percentage:>5.1f}%)")
+    print("="*60)
     
-    # Get indices for each class for stratified splitting
-    class_indices = {}
-    for class_label in np.unique(labels_array):
-        class_indices[class_label] = np.where(labels_array == class_label)[0]
-    
-    # Create stratified train/validation split (80/20)
-    train_indices = []
-    val_indices = []
-    
-    for class_label, indices in class_indices.items():
-        np.random.shuffle(indices)  # Randomize order
-        
-        # Calculate split point (80% for training, 20% for validation)
-        n_train = int(0.8 * len(indices))
-        n_train = max(1, n_train)  # Ensure at least 1 sample for training
-        
-        # If class has only 1 sample, put it in training
-        if len(indices) == 1:
-            train_indices.extend(indices)
-        else:
-            train_indices.extend(indices[:n_train])
-            val_indices.extend(indices[n_train:])
-    
-    # Shuffle the final indices
-    np.random.shuffle(train_indices)
-    np.random.shuffle(val_indices)
-    
-    # Create train and validation sets (no test set - using separate cs_test.json)
-    X_train = [(papers_df['text'].iloc[i], features_array[i]) for i in train_indices]
-    y_train = labels_array[train_indices]
-    
-    X_val = [(papers_df['text'].iloc[i], features_array[i]) for i in val_indices]
-    y_val = labels_array[val_indices]
-    
-    # Separate text and features
-    train_texts, train_features = zip(*X_train) if X_train else ([], [])
-    val_texts, val_features = zip(*X_val) if X_val else ([], [])
-    
-    # Convert to numpy arrays for SMOTE
-    train_features = np.array(train_features)
-    train_labels = np.array(y_train)
-    
-    print(f"Using entire cs_train.json for model training:")
-    print(f"Training set size: {len(train_texts)} ({len(train_texts)/len(papers_df)*100:.1f}% of total)")
-    print(f"Validation set size: {len(val_texts)} ({len(val_texts)/len(papers_df)*100:.1f}% of total)")
-    print(f"Total papers used: {len(train_texts) + len(val_texts)} (100% of cs_train.json)")
-    
-    # Apply SMOTE to the training data - keep original SMOTE implementation intact
-    print("Applying SMOTE to balance classes...")
+    # Check if SMOTE should be applied for class balancing
+    print("Checking class balancing strategy...")
     try:
         # Get original class distribution
         original_counts = Counter(train_labels)
-        print("Original class distribution:", original_counts)
+        print("\n" + "="*60)
+        print("📊 REAL CLASS DISTRIBUTION (Before any correction):")
+        print("="*60)
+        total_samples = sum(original_counts.values())
+        for label_idx in sorted(original_counts.keys()):
+            count = original_counts[label_idx]
+            percentage = (count / total_samples) * 100
+            # Map back to label names for clarity
+            label_names = {0: 'No Bias', 1: 'Cognitive Bias', 2: 'Publication Bias'}
+            label_name = label_names.get(label_idx, f'Class {label_idx}')
+            print(f"  {label_name:<18}: {count:>5} samples ({percentage:>5.1f}%)")
+        print("="*60)
         
-        # Check if any class has very few samples
-        min_samples_per_class = min(original_counts.values()) if original_counts else 0
+        # Calculate balanced class weights (less extreme than inverse frequency)
+        total_samples = sum(original_counts.values())
+        num_classes = len(original_counts)
+        class_weights = []
         
-        if min_samples_per_class >= 6:
-            # Regular SMOTE can be applied
-            smote = SMOTE(random_state=42)
-            resampled_features, resampled_labels = smote.fit_resample(train_features, train_labels)
-        else:
-            # Custom approach for very small classes
-            print(f"Found class with only {min_samples_per_class} samples. Using custom balancing approach.")
-            
-            # Find majority class count for reference
-            max_count = max(original_counts.values()) if original_counts else 0
-            target_count = max_count  # We'll aim for this many samples per class
-            
-            resampled_features = []
-            resampled_labels = []
-            
-            # Process each class
-            for class_label in np.unique(train_labels):
-                class_indices = np.where(train_labels == class_label)[0]
-                class_count = len(class_indices)
+        # Use square root of inverse frequency for less extreme weights
+        for i in range(num_classes):
+            if i in original_counts:
+                # Balanced weighting based on actual data distribution
+                raw_weight = total_samples / (num_classes * original_counts[i])
                 
-                if class_count >= 5:
-                    # If we have enough samples, use SMOTE for this class specifically
-                    try:
-                        class_features = train_features[class_indices]
-                        # Use SMOTE with fewer neighbors
-                        k_neighbors = min(class_count - 1, 5)  # Max neighbors possible
-                        if k_neighbors >= 1:  # Need at least 1 neighbor
-                            smote_single = SMOTE(k_neighbors=k_neighbors, random_state=42)
-                            
-                            # Create a temporary binary classification problem
-                            temp_labels = np.zeros(len(train_labels))
-                            temp_labels[class_indices] = 1
-                            
-                            # Only apply SMOTE to samples of this class and a similar number of other samples
-                            other_indices = np.random.choice(
-                                np.where(temp_labels == 0)[0], 
-                                min(len(class_indices) * 2, len(train_labels) - len(class_indices)),
-                                replace=False
-                            )
-                            
-                            temp_indices = np.concatenate([class_indices, other_indices])
-                            temp_features = train_features[temp_indices]
-                            temp_class_labels = temp_labels[temp_indices]
-                            
-                            # Apply SMOTE to this subset
-                            resampled_temp_features, resampled_temp_labels = smote_single.fit_resample(
-                                temp_features, temp_class_labels)
-                            
-                            # Extract only the synthetic samples of our target class
-                            synthetic_indices = np.where(
-                                (resampled_temp_labels == 1) & 
-                                (np.arange(len(resampled_temp_labels)) >= len(temp_features))
-                            )[0]
-                            
-                            synthetic_features = resampled_temp_features[synthetic_indices]
-                            
-                            # Calculate how many samples we need
-                            samples_needed = target_count - class_count
-                            
-                            if samples_needed > 0 and len(synthetic_features) > 0:
-                                # Sample with replacement if we need more than we generated
-                                if samples_needed > len(synthetic_features):
-                                    indices = np.random.choice(
-                                        len(synthetic_features), samples_needed, replace=True)
-                                else:
-                                    indices = np.random.choice(
-                                        len(synthetic_features), samples_needed, replace=False)
-                                
-                                selected_synthetic_features = synthetic_features[indices]
-                                
-                                # Add original and synthetic samples
-                                resampled_features.extend(train_features[class_indices])
-                                resampled_features.extend(selected_synthetic_features)
-                                resampled_labels.extend([class_label] * class_count)
-                                resampled_labels.extend([class_label] * samples_needed)
-                            else:
-                                # Just add original samples
-                                resampled_features.extend(train_features[class_indices])
-                                resampled_labels.extend([class_label] * class_count)
-                        else:
-                            # Not enough neighbors, just duplicate
-                            resampled_features.extend(train_features[class_indices])
-                            resampled_labels.extend([class_label] * class_count)
-                            
-                            # Duplicate to reach target count
-                            samples_needed = target_count - class_count
-                            if samples_needed > 0:
-                                # Random sampling with replacement from this class
-                                indices = np.random.choice(class_count, samples_needed, replace=True)
-                                selected_features = train_features[class_indices][indices]
-                                resampled_features.extend(selected_features)
-                                resampled_labels.extend([class_label] * samples_needed)
-                    
-                    except Exception as e:
-                        print(f"Error applying SMOTE to class {class_label}: {e}")
-                        # Fallback to simple duplication
-                        resampled_features.extend(train_features[class_indices])
-                        resampled_labels.extend([class_label] * class_count)
-                else:
-                    # For very small classes, use simple duplication
-                    resampled_features.extend(train_features[class_indices])
-                    resampled_labels.extend([class_label] * class_count)
-                    
-                    # Duplicate to reach target count
-                    samples_needed = target_count - class_count
-                    if samples_needed > 0:
-                        # Random sampling with replacement from this class
-                        indices = np.random.choice(class_count, samples_needed, replace=True)
-                        selected_features = train_features[class_indices][indices]
-                        resampled_features.extend(selected_features)
-                        resampled_labels.extend([class_label] * samples_needed)
+                # Aggressive weighting for 85% accuracy target in 3 epochs
+                if original_counts[i] < 300:  # Cognitive Bias (smallest - 5.1%)
+                    balanced_weight = min(raw_weight * 2.5, 25.0)  # Strong boost for smallest
+                elif original_counts[i] < 600:  # No Bias (medium - 8.2%)
+                    balanced_weight = min(raw_weight * 1.8, 12.0)  # Good boost for medium
+                else:  # Publication Bias (majority - 86.7%)
+                    balanced_weight = min(raw_weight ** 0.7, 3.0)  # Reasonable weight for majority
+                class_weights.append(balanced_weight)
+            else:
+                class_weights.append(1.0)
         
-            # Convert lists to numpy arrays
-            resampled_features = np.array(resampled_features)
-            resampled_labels = np.array(resampled_labels)
+        print(f"Calculated class weights: {[f'{w:.2f}' for w in class_weights]}")
         
-        # Generate synthetic texts for new samples
-        # First, map original labels to their texts
-        label_to_texts = {}
-        for text, label in zip(train_texts, train_labels):
-            if label not in label_to_texts:
-                label_to_texts[label] = []
-            label_to_texts[label].append(text)
+        # Check if we have enough samples for SMOTE
+        min_samples_per_class = min(original_counts.values())
         
-        # Count new samples per class
-        new_counts = Counter(resampled_labels)
+        # Disable SMOTE to learn real data distribution
+        use_smote = False  # SMOTE was over-correcting the imbalance
         
-        # Generate texts for all samples (including synthetic ones)
-        synthetic_texts = []
-        for i, label in enumerate(resampled_labels):
-            if i < len(train_texts):  # Original sample
-                synthetic_texts.append(train_texts[i])
-            else:  # Synthetic sample
-                # Randomly select a text from the same class
-                if label in label_to_texts and label_to_texts[label]:
-                    synthetic_texts.append(np.random.choice(label_to_texts[label]))
-                else:
-                    # Fallback text if somehow we don't have any text for this label
-                    synthetic_texts.append(f"Synthetic computer science research paper text for class {label}")
-        
-        # Update train_texts and train_features with resampled data
-        train_texts = synthetic_texts
-        train_features = resampled_features
-        train_labels = resampled_labels
-        
-        print("After balancing class distribution:", new_counts)
-        
+        if use_smote and min_samples_per_class >= 6:
+            # Very aggressive SMOTE for 85% accuracy target
+            max_samples = max(original_counts.values())
+            target_samples = min(max_samples, 1000)  # Higher target for 85% accuracy
+            
+            # Create aggressive sampling strategy for 3-epoch training
+            sampling_strategy = {}
+            for label, count in original_counts.items():
+                if count < 800:  # Boost all underrepresented classes
+                    if count < 200:  # Cognitive Bias (154 samples)
+                        sampling_strategy[label] = min(target_samples, count * 5)  # 5x boost for smallest
+                    elif count < 500:  # No Bias if needed
+                        sampling_strategy[label] = min(target_samples, count * 3)  # 3x boost for medium
+                    else:
+                        sampling_strategy[label] = min(target_samples, int(count * 1.5))  # 1.5x boost
+            
+            print(f"SMOTE sampling strategy: {sampling_strategy}")
+            
+            if sampling_strategy:  # Only apply SMOTE if needed
+                k_neighbors = min(5, min_samples_per_class - 1)
+                smote = SMOTE(sampling_strategy=sampling_strategy, random_state=42, k_neighbors=k_neighbors)
+                resampled_features, resampled_labels = smote.fit_resample(train_features, train_labels)
+            else:
+                resampled_features, resampled_labels = train_features, train_labels
+            
+            # Update training data with resampled features only (keep original texts)
+            # NEVER modify the original dataset files - only work with in-memory data
+            train_features = resampled_features
+            train_labels = resampled_labels
+            
+            # For synthetic samples, duplicate existing texts from same class
+            if len(resampled_labels) > len(train_texts):
+                # Need to extend texts for synthetic samples
+                extended_texts = list(train_texts)  # Copy original texts
+                label_to_texts = {}
+                for i, (text, label) in enumerate(zip(train_texts, train_labels[:len(train_texts)])):
+                    if label not in label_to_texts:
+                        label_to_texts[label] = []
+                    label_to_texts[label].append(text)
+                
+                # Add texts for synthetic samples
+                for i in range(len(train_texts), len(resampled_labels)):
+                    label = resampled_labels[i]
+                    if label in label_to_texts and label_to_texts[label]:
+                        extended_texts.append(np.random.choice(label_to_texts[label]))
+                    else:
+                        # Fallback: use first text from training set
+                        extended_texts.append(train_texts[0])
+                
+                train_texts = extended_texts
+            
+            print("\n" + "="*60)
+            print("📊 CORRECTED CLASS DISTRIBUTION (After SMOTE):")
+            print("="*60)
+            corrected_counts = Counter(resampled_labels)
+            corrected_total = sum(corrected_counts.values())
+            for label_idx in sorted(corrected_counts.keys()):
+                count = corrected_counts[label_idx]
+                percentage = (count / corrected_total) * 100
+                label_names = {0: 'No Bias', 1: 'Cognitive Bias', 2: 'Publication Bias'}
+                label_name = label_names.get(label_idx, f'Class {label_idx}')
+                print(f"  {label_name:<18}: {count:>5} samples ({percentage:>5.1f}%)")
+            print("="*60)
+        else:
+            print("\n" + "="*60)
+            print("📊 NO CORRECTION APPLIED - Using real distribution:")
+            print("="*60)
+            if not use_smote:
+                print("SMOTE disabled. Training on original class distribution.")
+                print("Relying on class weights only to handle imbalance.")
+            else:
+                print(f"Not enough samples per class (min: {min_samples_per_class}). Skipping SMOTE.")
+            print("="*60)
+            # Still use class weights even without SMOTE
+            
     except Exception as e:
-        print(f"Error in data balancing process: {e}")
+        print(f"Error in SMOTE process: {e}")
         print("Proceeding with original imbalanced data")
+        # Calculate class weights even if SMOTE fails
+        original_counts = Counter(train_labels)
+        total_samples = sum(original_counts.values())
+        num_classes = len(original_counts)
+        class_weights = []
+        for i in range(num_classes):
+            if i in original_counts:
+                weight = total_samples / (num_classes * original_counts[i])
+                class_weights.append(weight)
+            else:
+                class_weights.append(1.0)
     
-    # Memory optimization - clear unnecessary variables
-    del papers_df, handcrafted_features, features_array, labels_array
-    
-    # Setup tokenizer
+    # Setup tokenizer - use bert-base-uncased like economics model
     print("Setting up tokenizer...")
-    try:
-        # Use SciBERT which is better for scientific papers - with CPU settings
-        model_name = 'allenai/scibert_scivocab_uncased'
-        print(f"Loading tokenizer: {model_name}")
-        tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-    except Exception as e:
-        print(f"Error loading tokenizer: {e}")
-        print("Falling back to bert-base-uncased")
-        tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased', use_fast=True)
+    tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
     
-    # Use balanced model complexity for 4GB GPU - not too aggressive
-    if device.type == 'cuda':
-        print("Using balanced model complexity for 4GB GPU")
-        max_seq_length = 64   # Reduced for speed
-        max_sections = 2      # Reduced for speed  
-        max_sents = 3         # Reduced for speed
-        print(f"GPU settings: seq_len={max_seq_length}, sections={max_sections}, sents={max_sents}")
-    else:
-        print("Using reduced model complexity for CPU execution")
-        max_seq_length = 128  # Better than 64 for learning
-        max_sections = 3      # Better than 2 for learning
-        max_sents = 6         # Better than 4 for learning
+    # Create hierarchical datasets optimized for GTX 1650
+    print("Creating hierarchical datasets optimized for GTX 1650...")
     
-    # Create hierarchical datasets with reduced complexity
-    print("Creating hierarchical datasets...")
-    train_dataset = HierarchicalResearchPaperDataset(
+    # Much more aggressive reduction for faster training
+    max_seq_length = 64   # Further reduced from 96
+    max_sections = 3      # Further reduced from 4 
+    max_sents = 4         # Further reduced from 6
+    
+    train_dataset = HierarchicalCSPaperDataset(
         train_texts, train_labels, tokenizer, train_features,
         max_seq_length=max_seq_length,
         max_sections=max_sections,
         max_sents=max_sents
     )
     
-    val_dataset = HierarchicalResearchPaperDataset(
-        val_texts, y_val, tokenizer, np.array(val_features),
+    val_dataset = HierarchicalCSPaperDataset(
+        val_texts, val_labels, tokenizer, val_features,
         max_seq_length=max_seq_length,
         max_sections=max_sections,
         max_sents=max_sents
     )
     
-    # No test dataset - using separate cs_test.json for testing
-    
-    # Use memory-optimized batch size for 4GB GPU
-    if device.type == 'cuda':
-        batch_size = 4  # Larger batch size for better throughput
-        print(f"Using batch size: {batch_size} for 4GB GPU (speed optimized)")
+    # Much smaller batch size to prevent 24-hour training issues
+    if torch.cuda.is_available():
+        # Use batch size 1 for GTX 1650 memory constraints
+        batch_size = 1
+        print("Using batch size of 1 to prevent memory issues and long training times")
     else:
-        batch_size = 2  # Smaller batch size for CPU
-        print(f"Using batch size: {batch_size} for CPU processing")
+        batch_size = 1
+    
+    if batch_size == 0:
+        batch_size = 1
+    print(f"Using batch size: {batch_size}")
+    print(f"Model parameters: seq_len={max_seq_length}, sections={max_sections}, sents={max_sents}")
     
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size)
-    # No test dataloader - using separate testing script
     
-    # Initialize hierarchical model - force CPU execution
-    print("Initializing hierarchical model for CPU execution...")
-    try:
-        print("Loading full hierarchical model")
-        model = HierarchicalBiasPredictionModel(
-            'allenai/scibert_scivocab_uncased', 
-            num_classes=3,
-            feature_dim=len(feature_names),
-            dropout_rate=0.3  # Standard dropout rate
-        )
-    except Exception as e:
-        print(f"Error loading SciBERT for hierarchical model: {e}")
-        print("Falling back to bert-base-uncased")
-        model = HierarchicalBiasPredictionModel(
-            'bert-base-uncased', 
-            num_classes=3,
-            feature_dim=len(feature_names),
-            dropout_rate=0.3
-        )
+    # Initialize CS bias prediction model
+    print("Initializing CS bias prediction model...")
+    num_classes = 3  # Fixed: No Bias, Cognitive Bias, Publication Bias
+    print(f"Model configured for {num_classes} classes")
     
-    # Move model to device (GPU or CPU)
-    model.to(device)
-    print(f"Model is on device: {next(model.parameters()).device}")
-    
-    # Print memory usage after model loading
-    print_memory_usage("After Model Loading")
-    
-    # Test a single forward pass to check memory
-    if len(train_dataloader) > 0:
-        print("\nTesting single forward pass...")
-        model.eval()
-        with torch.no_grad():
-            try:
-                test_batch = next(iter(train_dataloader))
-                test_input_ids = test_batch['input_ids'].to(device)
-                test_attention_mask = test_batch['attention_mask'].to(device)
-                test_handcrafted_features = test_batch['handcrafted_features'].to(device)
-                
-                print(f"Test batch shapes: {test_input_ids.shape}, {test_attention_mask.shape}")
-                
-                # Try forward pass
-                test_outputs = model(test_input_ids, test_attention_mask, test_handcrafted_features)
-                print(f"Test forward pass successful! Output shape: {test_outputs.shape}")
-                
-                # Clear test tensors
-                del test_batch, test_input_ids, test_attention_mask, test_handcrafted_features, test_outputs
-                if device.type == 'cuda':
-                    torch.cuda.empty_cache()
-                    
-            except Exception as e:
-                print(f"ERROR in test forward pass: {e}")
-                print("Model may be too large for available memory!")
-                if device.type == 'cuda':
-                    torch.cuda.empty_cache()
+    # Use bert-base-uncased like the successful economics model
+    model = CSBiasPredictionModel(
+        'bert-base-uncased', 
+        num_classes=num_classes,
+        feature_dim=len(feature_names)
+    )
         
-        model.train()  # Back to training mode
+    model.to(device)
     
-    # Additional memory optimization for 4GB GPU
-    if device.type == 'cuda':
-        # Set memory growth to avoid pre-allocation
-        torch.backends.cudnn.benchmark = False  # Disable for memory consistency
-        torch.backends.cudnn.deterministic = True  # Enable for reproducibility
-        print(f"Available GPU memory: {torch.cuda.memory_reserved(0) / 1024**2:.1f} MB")
+    # Train model with class weights for imbalance handling
+    print("Training CS bias prediction model optimized for GTX 1650...")
     
-    # Train hierarchical model
-    print("Training hierarchical model...")
-    try:
-        if device.type == 'cuda':
-            # GPU training parameters (optimized for 4GB GPU)
-            print("Attempting GPU training with memory optimization...")
-            model = train_hierarchical_model(
-                train_dataloader, val_dataloader, model, device, 
-                accumulation_steps=8  # Higher accumulation for GPU efficiency (uses defaults: epochs=2, lr=2e-5)
-            )
-        else:
-            # CPU training parameters (using function defaults)
-            print("Using CPU training...")
-            model = train_hierarchical_model(
-                train_dataloader, val_dataloader, model, device
-                # Uses defaults: epochs=2, accumulation_steps=4, lr=2e-5
-            )
-    except RuntimeError as e:
-        if "out of memory" in str(e).lower():
-            print(f"\n{'='*50}")
-            print("GPU OUT OF MEMORY ERROR DETECTED!")
-            print(f"{'='*50}")
-            print("Falling back to CPU training...")
-            
-            # Clear GPU memory
-            if device.type == 'cuda':
-                torch.cuda.empty_cache()
-                del model
-                torch.cuda.empty_cache()
-            
-            # Switch to CPU
-            device = torch.device('cpu')
-            
-            # Recreate model on CPU
-            try:
-                model = HierarchicalBiasPredictionModel(
-                    'allenai/scibert_scivocab_uncased', 
-                    num_classes=3,
-                    feature_dim=len(feature_names),
-                    dropout_rate=0.3
-                )
-            except:
-                model = HierarchicalBiasPredictionModel(
-                    'bert-base-uncased', 
-                    num_classes=3,
-                    feature_dim=len(feature_names),
-                    dropout_rate=0.3
-                )
-            
-            model.to(device)
-            print(f"Model moved to CPU. Retrying training...")
-            
-            # Retry training on CPU with minimal resource usage
-            model = train_hierarchical_model(
-                train_dataloader, val_dataloader, model, device, 
-                accumulation_steps=2,  # Minimal accumulation for memory-constrained CPU
-                lr=1e-5  # Lower learning rate for stability (uses default epochs=2)
-            )
-        else:
-            raise e  # Re-raise if it's not a memory error
+    # Higher gradient accumulation to compensate for smaller batch size
+    accumulation_steps = 8 if torch.cuda.is_available() else 4
+    print(f"Using gradient accumulation steps: {accumulation_steps} (to compensate for batch_size=1)")
     
-    # Model training completed - saved as 'best_hierarchical_model.pt'
-    print("\n" + "="*50)
-    print("MODEL TRAINING COMPLETED SUCCESSFULLY!")
-    print("="*50)
-    print(f"Best model saved as: 'best_hierarchical_model.pt'")
-    print(f"Model trained on {len(train_texts) + len(val_texts)} papers from cs_train.json")
-    print(f"Training papers: {len(train_texts)}")
-    print(f"Validation papers: {len(val_texts)}")
-    print("\nUse your separate testing script with cs_test.json to evaluate the model.")
-    print("="*50)
+    model = train_cs_model(
+        train_dataloader, val_dataloader, model, device, 
+        epochs=3,  # Maximum 3 epochs due to CUDA constraints
+        lr=4e-5,  # Higher learning rate for faster convergence in 3 epochs
+        accumulation_steps=accumulation_steps,
+        class_weights=class_weights
+    )
+    
+    # Save the final model and metadata
+    model_info = {
+        'model_state_dict': model.state_dict(),
+        'label_mapping': label_mapping,
+        'feature_names': feature_names,
+        'num_classes': num_classes
+    }
+    
+    torch.save(model_info, 'cs_bias_model_complete.pt')
+    
+    # Save label mapping separately for easy access
+    with open('cs_label_mapping.json', 'w') as f:
+        json.dump(label_mapping, f, indent=2)
+    
+    print("Training completed!")
+    print(f"Model saved as 'cs_bias_model_complete.pt'")
+    print(f"Label mapping saved as 'cs_label_mapping.json'")
+    print(f"Label mapping: {label_mapping}")
 
 if __name__ == "__main__":
-    # Set the Python multiprocessing method to avoid issues on Windows
-    import multiprocessing
-    try:
-        multiprocessing.set_start_method('spawn')
-    except RuntimeError:
-        pass
-    
-    # Initial GPU cleanup before any operations
-    print("=" * 60)
-    print("STARTING HIERARCHICAL BIAS PREDICTION MODEL TRAINING")
-    print("=" * 60)
-    
-    if torch.cuda.is_available():
-        print("Performing initial GPU cleanup...")
-        # Reset all GPU memory
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
-        torch.cuda.synchronize()  # Wait for all operations to complete
-        
-        # Set environment variables for memory optimization
-        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128,roundup_power2_divisions:16'
-        
-        # Force garbage collection
-        gc.collect()
-        
-        # Show initial GPU memory state
-        print(f"Initial GPU memory allocated: {torch.cuda.memory_allocated() / 1024**2:.1f} MB")
-        print(f"Initial GPU memory reserved: {torch.cuda.memory_reserved() / 1024**2:.1f} MB")
-        print("GPU cleanup completed!")
-    else:
-        print("No GPU detected - will use CPU training")
-    
-    print("\nStarting main training process...\n")
-    
-    # Run the main function
     main()
