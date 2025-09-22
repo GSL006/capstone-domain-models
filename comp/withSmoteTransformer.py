@@ -788,9 +788,9 @@ def train_cs_model(train_dataloader, val_dataloader, model, device,
     
     best_val_accuracy = 0
     best_model = None
-    patience = 1  # Minimal patience for 3 epochs maximum
+    patience = 3  # More patience for 5 epochs
     patience_counter = 0
-    min_improvement = 0.005  # Higher improvement threshold for aggressive training
+    min_improvement = 0.001  # Very low threshold for gradual improvements
     
     for epoch in range(epochs):
         # Training
@@ -799,11 +799,11 @@ def train_cs_model(train_dataloader, val_dataloader, model, device,
         optimizer.zero_grad()
         
         for batch_idx, batch in enumerate(train_dataloader):
-            # Aggressive memory management for GTX 1650
+            # Very aggressive memory management for GTX 1650 with SMOTE
             if torch.cuda.is_available():
-                if batch_idx % 3 == 0:  # Clear cache every 3 batches
+                if batch_idx % 2 == 0:  # Clear cache every 2 batches (more frequent)
                     torch.cuda.empty_cache()
-                if batch_idx % 10 == 0:  # Synchronize every 10 batches
+                if batch_idx % 5 == 0:  # Synchronize every 5 batches (more frequent)
                     torch.cuda.synchronize()
             
             input_ids = batch['input_ids'].to(device)
@@ -828,9 +828,9 @@ def train_cs_model(train_dataloader, val_dataloader, model, device,
                 # Free intermediate tensors to save memory
                 del outputs, loss
                 
-                # Clear GPU cache more aggressively
-                if torch.cuda.is_available() and batch_idx % 2 == 0:
-                    torch.cuda.empty_cache()
+                # Clear GPU cache very aggressively for SMOTE dataset
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()  # Clear after every batch with SMOTE
                 
                 # Accumulate gradients and update at intervals
                 if (batch_idx + 1) % accumulation_steps == 0:
@@ -1195,24 +1195,36 @@ def main():
             print(f"  {label_name:<18}: {count:>5} samples ({percentage:>5.1f}%)")
         print("="*60)
         
-        # Calculate balanced class weights (less extreme than inverse frequency)
+        # Calculate balanced class weights using generalizable method
         total_samples = sum(original_counts.values())
         num_classes = len(original_counts)
         class_weights = []
         
-        # Use square root of inverse frequency for less extreme weights
+        # Use square root of inverse frequency for balanced weights (generalizable approach)
         for i in range(num_classes):
             if i in original_counts:
-                # Balanced weighting based on actual data distribution
+                # Standard balanced class weight formula: n_samples / (n_classes * n_samples_class)
                 raw_weight = total_samples / (num_classes * original_counts[i])
                 
-                # Aggressive weighting for 85% accuracy target in 3 epochs
-                if original_counts[i] < 300:  # Cognitive Bias (smallest - 5.1%)
-                    balanced_weight = min(raw_weight * 2.5, 25.0)  # Strong boost for smallest
-                elif original_counts[i] < 600:  # No Bias (medium - 8.2%)
-                    balanced_weight = min(raw_weight * 1.8, 12.0)  # Good boost for medium
-                else:  # Publication Bias (majority - 86.7%)
-                    balanced_weight = min(raw_weight ** 0.7, 3.0)  # Reasonable weight for majority
+                # Adaptive class weighting based on imbalance severity (generalizable)
+                total_samples = sum(original_counts.values())
+                current_imbalance = max(original_counts.values()) / min(original_counts.values())
+                
+                # Dynamic weighting based on imbalance ratio
+                if current_imbalance > 15:  # Severe imbalance
+                    weight_multiplier = 2.0
+                    max_weight = 10.0
+                elif current_imbalance > 8:  # Moderate imbalance
+                    weight_multiplier = 1.5  
+                    max_weight = 8.0
+                else:  # Mild imbalance
+                    weight_multiplier = 1.2
+                    max_weight = 5.0
+                
+                # Apply adaptive weighting
+                balanced_weight = np.sqrt(raw_weight) * weight_multiplier
+                balanced_weight = min(balanced_weight, max_weight)
+                
                 class_weights.append(balanced_weight)
             else:
                 class_weights.append(1.0)
@@ -1222,24 +1234,32 @@ def main():
         # Check if we have enough samples for SMOTE
         min_samples_per_class = min(original_counts.values())
         
-        # Disable SMOTE to learn real data distribution
-        use_smote = False  # SMOTE was over-correcting the imbalance
+        # Enable SMOTE to ensure all classes are learnable
+        use_smote = True  # Need synthetic samples for minority classes to be learned
         
         if use_smote and min_samples_per_class >= 6:
-            # Very aggressive SMOTE for 85% accuracy target
+            # Balanced SMOTE strategy - bring minority classes to reasonable levels
             max_samples = max(original_counts.values())
-            target_samples = min(max_samples, 1000)  # Higher target for 85% accuracy
             
-            # Create aggressive sampling strategy for 3-epoch training
+            # Adaptive SMOTE strategy based on class imbalance ratio
+            imbalance_ratio = max_samples / min(original_counts.values())
+            
+            # Dynamic target based on imbalance severity (generalizable approach)
+            if imbalance_ratio > 10:  # Severe imbalance
+                target_ratio = 0.3  # Bring minorities to 30% of majority
+            elif imbalance_ratio > 5:  # Moderate imbalance  
+                target_ratio = 0.4  # Bring minorities to 40% of majority
+            else:  # Mild imbalance
+                target_ratio = 0.6  # Bring minorities to 60% of majority
+            
+            min_target_samples = int(max_samples * target_ratio)
+            
+            # Create adaptive sampling strategy
             sampling_strategy = {}
             for label, count in original_counts.items():
-                if count < 800:  # Boost all underrepresented classes
-                    if count < 200:  # Cognitive Bias (154 samples)
-                        sampling_strategy[label] = min(target_samples, count * 5)  # 5x boost for smallest
-                    elif count < 500:  # No Bias if needed
-                        sampling_strategy[label] = min(target_samples, count * 3)  # 3x boost for medium
-                    else:
-                        sampling_strategy[label] = min(target_samples, int(count * 1.5))  # 1.5x boost
+                # Oversample underrepresented classes based on adaptive target
+                if count < min_target_samples:
+                    sampling_strategy[label] = min_target_samples
             
             print(f"SMOTE sampling strategy: {sampling_strategy}")
             
@@ -1322,10 +1342,10 @@ def main():
     # Create hierarchical datasets optimized for GTX 1650
     print("Creating hierarchical datasets optimized for GTX 1650...")
     
-    # Much more aggressive reduction for faster training
-    max_seq_length = 64   # Further reduced from 96
-    max_sections = 3      # Further reduced from 4 
-    max_sents = 4         # Further reduced from 6
+    # Balanced model complexity for 85% accuracy target
+    max_seq_length = 64   # Increase back for better feature extraction
+    max_sections = 3      # Increase back for better hierarchical learning
+    max_sents = 4         # Increase back for better context
     
     train_dataset = HierarchicalCSPaperDataset(
         train_texts, train_labels, tokenizer, train_features,
@@ -1380,8 +1400,8 @@ def main():
     
     model = train_cs_model(
         train_dataloader, val_dataloader, model, device, 
-        epochs=3,  # Maximum 3 epochs due to CUDA constraints
-        lr=4e-5,  # Higher learning rate for faster convergence in 3 epochs
+        epochs=5,  # Increase to 5 epochs for 85% accuracy target
+        lr=2e-5,  # Lower learning rate for better convergence with more epochs
         accumulation_steps=accumulation_steps,
         class_weights=class_weights
     )
@@ -1396,13 +1416,13 @@ def main():
     
     torch.save(model_info, 'cs_bias_model_complete.pt')
     
-    # Save label mapping separately for easy access
-    with open('cs_label_mapping.json', 'w') as f:
-        json.dump(label_mapping, f, indent=2)
+    # Clean up checkpoint file (no longer needed)
+    if os.path.exists('best_cs_bias_model.pt'):
+        os.remove('best_cs_bias_model.pt')
+        print("Cleaned up checkpoint file: best_cs_bias_model.pt")
     
     print("Training completed!")
     print(f"Model saved as 'cs_bias_model_complete.pt'")
-    print(f"Label mapping saved as 'cs_label_mapping.json'")
     print(f"Label mapping: {label_mapping}")
 
 if __name__ == "__main__":

@@ -57,16 +57,15 @@ def load_single_paper(json_file_path):
     except Exception as e:
         return pd.DataFrame(columns=['text', 'reason'])
 
-def load_trained_model(model_path, label_mapping_path, device):
+def load_trained_model(model_path, device):
     """Load the trained CS bias prediction model"""
     
     try:
-        # Load model info
+        # Load model info (contains everything including label mapping)
         model_info = torch.load(model_path, map_location=device)
         
-        # Load label mapping
-        with open(label_mapping_path, 'r') as f:
-            label_mapping = json.load(f)
+        # Get label mapping from model info
+        label_mapping = model_info['label_mapping']
         
         # Get model parameters
         num_classes = model_info['num_classes']
@@ -307,16 +306,12 @@ def main():
     # File paths
     test_data_path = 'single_random_paper.json'
     model_path = 'cs_bias_model_complete.pt'
-    label_mapping_path = 'cs_label_mapping.json'
     
     # Check if required files exist
     if not os.path.exists(test_data_path):
         return
     
     if not os.path.exists(model_path):
-        return
-    
-    if not os.path.exists(label_mapping_path):
         return
     
     # Load single paper
@@ -327,7 +322,7 @@ def main():
     
     # Load trained model
     model, label_mapping, feature_names = load_trained_model(
-        model_path, label_mapping_path, device
+        model_path, device
     )
     
     if model is None:
