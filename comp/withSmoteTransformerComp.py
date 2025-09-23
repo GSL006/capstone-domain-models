@@ -637,7 +637,7 @@ class HierarchicalAttention(nn.Module):
 
         return torch.stack(doc_embeddings)
 
-# CS Bias Prediction Model
+# CS Bias Prediction Model - Using proven tech model architecture
 class CSBiasPredictionModel(nn.Module):
     def __init__(self, bert_model_name, num_classes=3, dropout_rate=0.3, feature_dim=25):
         # Force num_classes to be exactly 3 for CS bias detection
@@ -645,13 +645,15 @@ class CSBiasPredictionModel(nn.Module):
             print(f"WARNING: num_classes was {num_classes}, forcing to 3 for CS bias detection")
             num_classes = 3
         super(CSBiasPredictionModel, self).__init__()
+        
+        print("Loading BERT with proven architecture for CS processing")
         self.bert = AutoModel.from_pretrained(bert_model_name)
         self.dropout = nn.Dropout(dropout_rate)
         
-        # Dimensions
-        self.bert_dim = self.bert.config.hidden_size
+        # Dimensions - same as proven tech model
+        self.bert_dim = self.bert.config.hidden_size  # 768 for standard BERT
         self.handcrafted_dim = feature_dim
-        self.fusion_dim = 256
+        self.fusion_dim = 256  # Standard fusion dimension
         
         # Hierarchical attention
         self.hierarchical_attention = HierarchicalAttention(hidden_dim=self.bert_dim)
@@ -663,24 +665,20 @@ class CSBiasPredictionModel(nn.Module):
             fusion_dim=self.fusion_dim
         )
         
-        # Enhanced classification layers with residual connections
-        self.fc1 = nn.Linear(self.fusion_dim, 256)
-        self.fc2 = nn.Linear(256, 128)
-        self.fc3 = nn.Linear(128, num_classes)
-        
-        # Activation and normalization
+        # Classification layers - same as proven tech model
+        self.fc1 = nn.Linear(self.fusion_dim, 128)
+        self.fc2 = nn.Linear(128, num_classes)
         self.relu = nn.ReLU()
-        self.gelu = nn.GELU()  # Better activation for transformers
-        self.layer_norm1 = nn.LayerNorm(256)
-        self.layer_norm2 = nn.LayerNorm(128)
+        self.layer_norm = nn.LayerNorm(128)
         
-        # Residual connection for fusion dimension matching
-        self.residual_proj = nn.Linear(self.fusion_dim, 128) if self.fusion_dim != 128 else nn.Identity()
+        # Use memory-optimized forward from tech model
+        self.forward = self._forward_with_memory_optimization
         
-    def forward(self, input_ids, attention_mask, handcrafted_features):
+    def _forward_with_memory_optimization(self, input_ids, attention_mask, handcrafted_features):
         batch_size = input_ids.size(0)
         
         # Reshape for BERT processing
+        # Original shape: [batch_size, max_sections, max_sents, max_seq_length]
         max_sections, max_sents, max_seq_length = input_ids.size(1), input_ids.size(2), input_ids.size(3)
         
         # Process each sentence with BERT
@@ -691,11 +689,12 @@ class CSBiasPredictionModel(nn.Module):
                 sentence_embeddings = []
                 for i in range(max_sents):
                     # Process single sentence through BERT
-                    input_ids_sent = input_ids[b, s, i].unsqueeze(0)
-                    attention_mask_sent = attention_mask[b, s, i].unsqueeze(0)
+                    input_ids_sent = input_ids[b, s, i].unsqueeze(0)  # [1, max_seq_length]
+                    attention_mask_sent = attention_mask[b, s, i].unsqueeze(0)  # [1, max_seq_length]
                     
-                    # Skip processing empty sentences to save computation
+                    # Skip processing empty sentences to save memory
                     if attention_mask_sent.sum() > 0:
+                        # Process with BERT but clear cache after each step
                         outputs = self.bert(
                             input_ids=input_ids_sent, 
                             attention_mask=attention_mask_sent,
@@ -703,7 +702,10 @@ class CSBiasPredictionModel(nn.Module):
                         )
                         
                         # Get token embeddings from last layer
-                        token_embeddings = outputs.last_hidden_state[0]
+                        token_embeddings = outputs.last_hidden_state.squeeze(0)  # [max_seq_length, hidden_size]
+                        
+                        # Explicitly delete to free memory
+                        del outputs
                     else:
                         # Create zero embeddings for empty sentences
                         token_embeddings = torch.zeros(
@@ -712,85 +714,75 @@ class CSBiasPredictionModel(nn.Module):
                     sentence_embeddings.append(token_embeddings)
                 
                 # Stack to get all sentence embeddings for this section
-                section_embeddings.append(torch.stack(sentence_embeddings))
+                if sentence_embeddings:
+                    section_embeddings.append(torch.stack(sentence_embeddings))
+                else:
+                    # Create empty section if no sentences
+                    empty_section = torch.zeros(
+                        max_sents, max_seq_length, self.bert_dim, device=input_ids.device)
+                    section_embeddings.append(empty_section)
             
             # Stack to get all section embeddings for this document
-            word_embeddings.append(torch.stack(section_embeddings))
+            if section_embeddings:
+                word_embeddings.append(torch.stack(section_embeddings))
+            else:
+                # Create empty document if no sections
+                empty_doc = torch.zeros(
+                    max_sections, max_sents, max_seq_length, self.bert_dim, device=input_ids.device)
+                word_embeddings.append(empty_doc)
         
         # Stack to get embeddings for the entire batch
-        word_embeddings = torch.stack(word_embeddings)
+        word_embeddings = torch.stack(word_embeddings)  # [batch_size, max_sections, max_sents, max_seq_length, hidden_dim]
         
         # Apply hierarchical attention
         doc_embeddings = []
         for b in range(batch_size):
             doc_embedding = self.hierarchical_attention(
-                word_embeddings[b].unsqueeze(0),
+                word_embeddings[b].unsqueeze(0),  # Add batch dimension
                 attention_mask[b].unsqueeze(0)
             )
-            # Ensure doc_embedding is 1D (hidden_dim,)
-            if doc_embedding.dim() > 1:
-                doc_embedding = doc_embedding.squeeze()
             doc_embeddings.append(doc_embedding)
         
-        # Stack to create [batch_size, hidden_dim]
-        doc_embeddings = torch.stack(doc_embeddings)
+        # Free memory
+        del word_embeddings
+        
+        doc_embeddings = torch.cat(doc_embeddings, dim=0)
         
         # Feature fusion
         fused_features = self.feature_fusion(doc_embeddings, handcrafted_features)
         
-        # Enhanced classification with residual connections
-        x1 = self.fc1(fused_features)
-        x1 = self.gelu(x1)  # GELU works better with transformers
-        x1 = self.layer_norm1(x1)
-        x1 = self.dropout(x1)
+        # Free memory
+        del doc_embeddings
         
-        x2 = self.fc2(x1)
-        x2 = self.gelu(x2)
-        x2 = self.layer_norm2(x2)
-        
-        # Add residual connection
-        residual = self.residual_proj(fused_features)
-        x2 = x2 + residual
-        
-        x2 = self.dropout(x2)
-        output = self.fc3(x2)
+        # Final classification - same as proven tech model
+        x = self.fc1(fused_features)
+        x = self.relu(x)
+        x = self.layer_norm(x)
+        x = self.dropout(x)
+        output = self.fc2(x)
         
         return output
 
 # Training function with gradient accumulation and class weighting
 def train_cs_model(train_dataloader, val_dataloader, model, device, 
-                   epochs=3, lr=4e-5, accumulation_steps=2, class_weights=None):
-    """Train the CS bias prediction model with enhanced imbalance handling"""
+                   epochs=3, lr=3e-5, accumulation_steps=2, class_weights=None):
+    """Train the CS bias prediction model - using proven tech model approach"""
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs * len(train_dataloader))
     
-    # Optimized learning schedule for 3 epochs maximum
-    warmup_steps = len(train_dataloader) // 4  # Shorter warmup for 3 epochs
-    total_steps = epochs * len(train_dataloader)
-    
-    def lr_lambda(current_step):
-        if current_step < warmup_steps:
-            # Faster linear warmup
-            return float(current_step) / float(max(1, warmup_steps))
-        else:
-            # More aggressive cosine annealing for 3 epochs
-            progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
-            return max(0.1, 0.5 * (1.0 + np.cos(np.pi * progress)))  # Don't go below 10% of max LR
-    
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-    
-    # Use CrossEntropyLoss with class weights and label smoothing
+    # Use CrossEntropyLoss with class weights and label smoothing for better learning
     if class_weights is not None:
         class_weights_tensor = torch.tensor(class_weights, dtype=torch.float32).to(device)
         loss_fn = nn.CrossEntropyLoss(weight=class_weights_tensor, label_smoothing=0.1)
-        print(f"Using CrossEntropyLoss with class weights and label smoothing (0.1)")
+        print(f"Using CrossEntropyLoss with class weights and label smoothing")
     else:
         loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
     
     best_val_accuracy = 0
     best_model = None
-    patience = 3  # More patience for 5 epochs
+    patience = 3  # Full patience for 3 epochs
     patience_counter = 0
-    min_improvement = 0.001  # Very low threshold for gradual improvements
+    min_improvement = 0.001  # Slightly higher threshold for meaningful improvement
     
     for epoch in range(epochs):
         # Training
@@ -1210,16 +1202,16 @@ def main():
                 total_samples = sum(original_counts.values())
                 current_imbalance = max(original_counts.values()) / min(original_counts.values())
                 
-                # Dynamic weighting based on imbalance ratio
+                # More aggressive weighting targeting specific problem class (Cognitive Bias)
                 if current_imbalance > 15:  # Severe imbalance
-                    weight_multiplier = 2.0
-                    max_weight = 10.0
+                    weight_multiplier = 2.5  # Much stronger for Cognitive Bias
+                    max_weight = 12.0
                 elif current_imbalance > 8:  # Moderate imbalance
-                    weight_multiplier = 1.5  
-                    max_weight = 8.0
+                    weight_multiplier = 2.0  # Stronger boost
+                    max_weight = 10.0
                 else:  # Mild imbalance
-                    weight_multiplier = 1.2
-                    max_weight = 5.0
+                    weight_multiplier = 1.8  # Stronger boost
+                    max_weight = 8.0
                 
                 # Apply adaptive weighting
                 balanced_weight = np.sqrt(raw_weight) * weight_multiplier
@@ -1238,37 +1230,10 @@ def main():
         use_smote = True  # Need synthetic samples for minority classes to be learned
         
         if use_smote and min_samples_per_class >= 6:
-            # Balanced SMOTE strategy - bring minority classes to reasonable levels
-            max_samples = max(original_counts.values())
-            
-            # Adaptive SMOTE strategy based on class imbalance ratio
-            imbalance_ratio = max_samples / min(original_counts.values())
-            
-            # Dynamic target based on imbalance severity (generalizable approach)
-            if imbalance_ratio > 10:  # Severe imbalance
-                target_ratio = 0.3  # Bring minorities to 30% of majority
-            elif imbalance_ratio > 5:  # Moderate imbalance  
-                target_ratio = 0.4  # Bring minorities to 40% of majority
-            else:  # Mild imbalance
-                target_ratio = 0.6  # Bring minorities to 60% of majority
-            
-            min_target_samples = int(max_samples * target_ratio)
-            
-            # Create adaptive sampling strategy
-            sampling_strategy = {}
-            for label, count in original_counts.items():
-                # Oversample underrepresented classes based on adaptive target
-                if count < min_target_samples:
-                    sampling_strategy[label] = min_target_samples
-            
-            print(f"SMOTE sampling strategy: {sampling_strategy}")
-            
-            if sampling_strategy:  # Only apply SMOTE if needed
-                k_neighbors = min(5, min_samples_per_class - 1)
-                smote = SMOTE(sampling_strategy=sampling_strategy, random_state=42, k_neighbors=k_neighbors)
-                resampled_features, resampled_labels = smote.fit_resample(train_features, train_labels)
-            else:
-                resampled_features, resampled_labels = train_features, train_labels
+            # Use proven SMOTE strategy from tech model - regular SMOTE balancing
+            print("Applying standard SMOTE balancing...")
+            smote = SMOTE(random_state=42)
+            resampled_features, resampled_labels = smote.fit_resample(train_features, train_labels)
             
             # Update training data with resampled features only (keep original texts)
             # NEVER modify the original dataset files - only work with in-memory data
@@ -1400,8 +1365,8 @@ def main():
     
     model = train_cs_model(
         train_dataloader, val_dataloader, model, device, 
-        epochs=5,  # Increase to 5 epochs for 85% accuracy target
-        lr=2e-5,  # Lower learning rate for better convergence with more epochs
+        epochs=3,  # Reduced to 3 epochs as requested
+        lr=3e-5,  # Higher learning rate for faster convergence in 3 epochs
         accumulation_steps=accumulation_steps,
         class_weights=class_weights
     )

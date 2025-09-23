@@ -3,14 +3,15 @@ import numpy as np
 from collections import Counter
 
 
-def extract_single_random_entry(input_file='computer_science_papers.json', 
-                               output_file='single_random_paper.json'):
+def extract_random_entries(input_file='computer_science_papers.json', 
+                          output_file='random_papers.json', num_papers=5):
     """
-    Extract a single random entry from the computer science dataset
+    Extract random entries from the computer science dataset
     
     Args:
         input_file: Input JSON file with all papers
-        output_file: Output file for the single random paper
+        output_file: Output file for the random papers
+        num_papers: Number of papers to extract
     """
     
     print(f"Loading {input_file}...")
@@ -46,25 +47,28 @@ def extract_single_random_entry(input_file='computer_science_papers.json',
             print("Error: No valid papers found!")
             return False
         
-        # Randomly select 1 paper
+        # Randomly select papers (up to num_papers or all available if fewer)
         np.random.seed(42)  # For reproducibility
-        random_index = np.random.randint(0, len(valid_papers))
-        selected_paper_info = valid_papers[random_index]
+        num_to_select = min(num_papers, len(valid_papers))
+        selected_indices = np.random.choice(len(valid_papers), num_to_select, replace=False)
+        selected_papers_info = [valid_papers[i] for i in selected_indices]
         
-        original_index, selected_paper, bias_label = selected_paper_info
+        print(f"\nRandomly selected {num_to_select} papers:")
+        output_data = []
+        for i, (original_index, paper, bias_label) in enumerate(selected_papers_info, 1):
+            print(f"  Paper {i}:")
+            print(f"    Original index: {original_index}")
+            print(f"    Title: {paper.get('Title', 'No title')}")
+            print(f"    Bias label: {bias_label}")
+            print(f"    Body length: {len(paper.get('Body', ''))} characters")
+            print(f"    Reason length: {len(paper.get('Reason', ''))} characters")
+            output_data.append(paper)
         
-        print(f"\nRandomly selected paper:")
-        print(f"  Original index: {original_index}")
-        print(f"  Title: {selected_paper.get('Title', 'No title')}")
-        print(f"  Bias label: {bias_label}")
-        print(f"  Body length: {len(selected_paper.get('Body', ''))} characters")
-        print(f"  Reason length: {len(selected_paper.get('Reason', ''))} characters")
-        
-        # Save the single paper to output file
+        # Save the papers to output file
         with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump([selected_paper], f, indent=2, ensure_ascii=False)
+            json.dump(output_data, f, indent=2, ensure_ascii=False)
         
-        print(f"\nSingle random paper saved to: {output_file}")
+        print(f"\n{num_to_select} random papers saved to: {output_file}")
         
         return True
         
@@ -74,16 +78,16 @@ def extract_single_random_entry(input_file='computer_science_papers.json',
 
 
 if __name__ == "__main__":
-    print("Computer Science Dataset - Single Random Entry Extractor")
+    print("Computer Science Dataset - Random Entries Extractor")
     print("=" * 60)
     
-    # Extract a single random entry from the main dataset
-    success = extract_single_random_entry()
+    # Extract random entries from the main dataset
+    success = extract_random_entries()
     
     if success:
         print("\n" + "=" * 60)
-        print("Single random entry extraction completed!")
+        print("Random entries extraction completed!")
         print("\nFile created:")
-        print("- single_random_paper.json (1 random paper for testing)")
+        print("- random_papers.json (5 random papers for testing)")
     else:
-        print("Single entry extraction failed!")
+        print("Random entries extraction failed!")

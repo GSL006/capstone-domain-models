@@ -1,66 +1,106 @@
 # Bias Detection Models - Complete Workflow Guide
 
-This directory contains machine learning models for bias detection in academic research papers across different domains (Economics and Computer Science).
+This directory contains machine learning models for bias detection in academic research papers across different domains (Computer Science, Economics, Technology, and Business).
+
+## 🚀 Quick Setup (One-time Installation)
+
+### Automated Setup (Recommended)
+```bash
+# Navigate to the project directory
+cd capstone-domain-models/
+
+# Run the initialization script
+./init.sh
+```
+
+The `init.sh` script will:
+- ✅ Check Python 3.8+ installation
+- 📦 Optionally create virtual environment
+- 📚 Install all dependencies from `requirements.txt`
+- 📥 Download required NLTK data
+- 🔍 Verify all domain directories exist
+- 💾 Display system information (GPU/RAM)
+
+### Manual Setup (Alternative)
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Download NLTK data
+python download.py
+```
 
 ## 🚀 Quick Start Workflow
 
 ### General Workflow (3 Steps)
 
-#### Step 1: Prepare Dataset
+#### Step 1: Generate Test Papers
 ```bash
-cd capstone-domain-models/{domain}  # domain = econ or comp
+cd capstone-domain-models/{domain}  # domain = comp, econ, tech, or business
+python split_dataset.py             # Creates random_papers.json (5 papers)
 ```
 
-**For Computer Science (5,258 papers):**
+#### Step 2: Run Bias Detection
 ```bash
-python split_dataset.py  # Creates train/test split
+python evaluate.py                  # Outputs 5 predictions (one per line)
+```
+**Example Output:**
+```
+No Bias
+Cognitive Bias
+Publication Bias
+No Bias
+Publication Bias
 ```
 
-**For Economics:**
+#### Step 3: Train New Model (Optional)
 ```bash
-# Dataset already prepared as economics_papers.json
+python withSmoteTransformer.py      # Domain-specific training script
 ```
-
-#### Step 2: Train Model
-```bash
-python withSmoteTransformer.py
-```
-**Creates:** `best_hierarchical_model.pt` (trained model)
-
-#### Step 3: Evaluate Model
-```bash
-python evaluate_model.py  # (available for comp/, create for econ/)
-```
-**Shows:** Accuracy metrics and performance analysis
+**Creates:** Domain-specific trained model (e.g., `best_hierarchical_model.pt`)
 
 ## 📁 Directory Structure
 
 ```
 capstone-domain-models/
-├── README.md                    # This workflow guide
-├── download.py                  # Shared NLTK downloader
-├── econ/                        # Economics models
-│   ├── withSmoteTransformer.py  # Economics bias detection model
-│   ├── economics_papers.json    # Economics dataset
-│   ├── best_model.pt           # Trained model weights
-│   ├── best_hierarchical_model.pt # Hierarchical model weights
-│   ├── first_1000.json         # Subset for testing
-│   ├── download.py             # Economics NLTK setup
-│   └── shortener.py            # Economics data utilities
-└── comp/                       # Computer Science models
-    ├── withSmoteTransformer.py # CS bias detection model
-    ├── computer_science_papers.json # Full CS dataset (5,258 papers)
-    ├── split_dataset.py        # Dataset splitter
-    ├── evaluate_model.py       # Model evaluation script
-    ├── cs_train.json          # Training set (created by split)
-    ├── cs_test.json           # Test set (created by split)
-    ├── best_hierarchical_model.pt # Trained model (created by training)
-    └── download.py             # CS NLTK setup
+├── README.md                      # This workflow guide
+├── requirements.txt               # Python dependencies
+├── init.sh                       # Automated setup script
+├── download.py                   # Shared NLTK downloader
+├── comp/                         # Computer Science models
+│   ├── withSmoteTransformerComp.py # CS bias detection model
+│   ├── computer_science_papers.json # Full CS dataset
+│   ├── split_dataset.py          # Random paper extractor
+│   ├── evaluate.py               # Model evaluation script
+│   ├── random_papers.json        # Random test papers (generated)
+│   └── computer_science.pt       # Trained model
+├── econ/                         # Economics models
+│   ├── withSmoteTransformerEcon.py # Economics bias detection model
+│   ├── economics_papers.json     # Economics dataset
+│   ├── split_dataset.py          # Random paper extractor
+│   ├── evaluate.py               # Model evaluation script
+│   ├── random_papers.json        # Random test papers (generated)
+│   ├── economics.pt              # Trained model
+│   └── best_hierarchical_model.pt # Alternative model
+├── tech/                         # Technology models
+│   ├── withSmoteTransTech.py     # Technology bias detection model
+│   ├── technology_papers.json    # Technology dataset
+│   ├── split_dataset.py          # Random paper extractor
+│   ├── evaluate.py               # Model evaluation script
+│   ├── random_papers.json        # Random test papers (generated)
+│   └── technology.pt             # Trained model
+└── business/                     # Business models
+    ├── withSmoteTransBusiness.py # Business bias detection model
+    ├── business_papers.json      # Business dataset (202,918 papers)
+    ├── split_dataset.py          # Random paper extractor
+    ├── evaluate.py               # Model evaluation script
+    ├── random_papers.json        # Random test papers (generated)
+    └── best_hierarchical_business_model.pt # Trained model
 ```
 
 ## 📊 Expected Results
 
-### Model Performance (Both Domains)
+### Model Performance (All Domains)
 After running the complete workflow, expect:
 - **Training Accuracy**: 75-85% 
 - **Test Accuracy**: 65-75% (on unseen papers)
@@ -68,60 +108,86 @@ After running the complete workflow, expect:
 - **No Bias Detection**: Lowest accuracy (fewest samples)
 
 ### Generated Files
-- **Model**: `best_hierarchical_model.pt` (~400-450MB)
-- **Charts**: `classification_performance.png`, `confusion_matrix.png`
-- **Feature Analysis**: `{domain}_feature_importance.png`
+- **Test Papers**: `random_papers.json` (5 random papers)
+- **Predictions**: Console output (5 predictions, one per line)
+- **Training Models**: Domain-specific `.pt` files (~400-450MB)
+- **Charts**: `classification_performance.png`, `confusion_matrix.png` (if training)
+- **Feature Analysis**: `{domain}_feature_importance.png` (if training)
 
 ### Dataset Sizes
-- **Computer Science**: 5,258 papers → 4,000 train + 1,258 test
-- **Economics**: Variable size → 80% train + 20% test (automatic split)
+- **Computer Science**: 5,258 papers
+- **Economics**: Variable size
+- **Technology**: Variable size  
+- **Business**: 202,918 papers (largest dataset)
 
 ## 🎯 What the Models Detect
 
 ### Domain-Specific Features
 
-**Economics Model:**
-- **Statistical Patterns**: P-values, significance stars, coefficients
-- **Economic Jargon**: Econometric methods (OLS, 2SLS, IV, GMM)
-- **Theory References**: Neoclassical, Keynesian, Austrian economics
-- **Robustness**: Sensitivity analysis, alternative specifications
-
-**Computer Science Model:**
+**Computer Science Model (22 features):**
 - **Performance Metrics**: Accuracy, precision, recall, F1-score patterns
 - **CS Methods**: CNN, RNN, LSTM, BERT, SVM, Random Forest
 - **Evaluation Terms**: Cross-validation, benchmarks, baselines
 - **Comparison Patterns**: "Outperforms", "state-of-the-art" claims
 
-### Common Bias Indicators (Both Domains)
+**Economics Model (20 features):**
+- **Statistical Patterns**: P-values, significance stars, coefficients
+- **Economic Jargon**: Econometric methods (OLS, 2SLS, IV, GMM)
+- **Theory References**: Neoclassical, Keynesian, Austrian economics
+- **Robustness**: Sensitivity analysis, alternative specifications
+
+**Technology Model (22 features):**
+- **Tech Performance**: Efficiency, throughput, latency, scalability
+- **Technology Stack**: Deep learning, AI, algorithms, frameworks
+- **Innovation Terms**: "Cutting-edge", "next-generation", "disruptive"
+- **Validation Methods**: Benchmarking, testing, simulation
+
+**Business Model (22 features):**
+- **Business Metrics**: ROI, performance, growth, profitability
+- **Management Terms**: Strategy, competitive advantage, synergies
+- **Research Methods**: Surveys, case studies, interviews
+- **Business Jargon**: "Leverage", "paradigm shift", "best practices"
+
+### Common Bias Indicators (All Domains)
 - **Language Bias**: Hedge words vs. certainty claims
 - **Statistical Reporting**: Cherry-picked results, missing baselines
 - **Self-Reference**: Overuse of "our method/approach/results"
 - **Limitations**: Acknowledgment vs. omission of study limitations
+- **Citation Patterns**: Contradictory references ("but" usage)
+- **Visual Elements**: Over-reliance on figures/tables without context
 
 ## 🏗️ Model Architecture
 
-Both models use identical hierarchical architecture:
-1. **SciBERT Base**: Scientific paper-trained transformer
+All models use identical hierarchical architecture:
+1. **SciBERT Base**: Scientific paper-trained transformer (or BERT fallback)
 2. **Hierarchical Processing**: Document → Sections → Sentences → Words
 3. **Multi-level Attention**: Word, sentence, and section-level attention
-4. **Feature Fusion**: Combines BERT embeddings + handcrafted features
+4. **Feature Fusion**: Combines BERT embeddings + domain-specific handcrafted features
 5. **SMOTE Balancing**: Handles class imbalance in training data
-6. **CPU Optimization**: Memory-efficient for local execution
+6. **Memory Optimization**: Efficient processing for CPU/GPU execution
+7. **Domain Adaptation**: Specialized feature extractors per domain
 
 ## 📋 Data Format
 
-Both models expect JSON files with this structure:
+All models expect JSON files with this structure:
 ```json
 [
     {
         "Body": "Full paper text...",
-        "OverallBias": "Publication Bias",  // or "Cognitive Bias", "No Bias"
+        "Overall Bias": "Publication Bias",  // or "Cognitive Bias", "No Bias"
+        "Reason": "Justification for bias classification...",
+        "Title": "Paper title (optional)",
         "CognitiveBias": 18.0,
         "PublicationBias": 70.0,
         "NoBias": 12.0
     }
 ]
 ```
+
+**Required Fields for Evaluation:**
+- `Body`: Full paper text content
+- `Reason`: Explanation for bias classification (used for feature extraction)
+- `Overall Bias` or `OverallBias`: Target classification (for training only)
 
 ## 🎯 Model Output
 
@@ -132,9 +198,25 @@ The models classify papers into three categories:
 
 ## 📦 Requirements
 
+All dependencies are listed in `requirements.txt`. Install with:
+
 ```bash
-pip install torch transformers scikit-learn imbalanced-learn nltk pandas numpy matplotlib seaborn
+# Using the automated setup script (recommended)
+./init.sh
+
+# Or manual installation
+pip install -r requirements.txt
+python download.py  # Download NLTK data
 ```
+
+**Core Dependencies:**
+- `torch>=1.12.0` - Deep learning framework
+- `transformers>=4.21.0` - BERT/SciBERT models
+- `scikit-learn>=1.1.0` - ML utilities
+- `imbalanced-learn>=0.9.0` - SMOTE for class balancing
+- `nltk>=3.7` - Text processing
+- `pandas>=1.4.0` - Data manipulation
+- `numpy>=1.21.0` - Numerical computing
 
 ## 🔧 Troubleshooting
 
@@ -156,18 +238,21 @@ pip install torch transformers scikit-learn imbalanced-learn nltk pandas numpy m
 ## 💡 Tips for Best Results
 
 1. **Clean Data**: Ensure paper texts are complete and well-formatted
-2. **Balanced Classes**: Use SMOTE balancing (automatic in both models)
-3. **Proper Split**: Keep train/test separate 
-   - **CS**: Use `split_dataset.py` for clean 4K/1.2K split
-   - **Economics**: Model handles automatic 80/20 split
-4. **Feature Analysis**: Check domain-specific feature importance plots
-5. **Multiple Runs**: Train multiple times for stable results
+2. **Use Setup Script**: Run `./init.sh` for automated environment setup
+3. **Test Before Training**: Use `evaluate.py` with existing models first
+4. **Domain Selection**: Choose the domain that best matches your papers:
+   - **comp/**: Computer Science, AI, Machine Learning papers
+   - **econ/**: Economics, Finance, Policy papers  
+   - **tech/**: Technology, Engineering, Systems papers
+   - **business/**: Management, Marketing, Strategy papers
+5. **Multiple Predictions**: Test with `random_papers.json` (5 papers) for variety
 
 ## 🚀 Next Steps
 
-After getting good accuracy:
-1. **Deploy Model**: Use `evaluate_model.py` as template for inference
-2. **Expand Dataset**: Add more papers for better generalization  
-3. **Fine-tune Features**: Modify feature extractors for your specific needs
-4. **Cross-Domain Testing**: Test economics model on CS papers and vice versa
-5. **New Domains**: Adapt feature extractors for other academic fields
+After testing with existing models:
+1. **Evaluate Performance**: Test on your own papers using `evaluate.py`
+2. **Train New Models**: Use `withSmoteTransformer.py` scripts for custom training
+3. **Cross-Domain Testing**: Test business model on economics papers and vice versa
+4. **Expand Datasets**: Add more papers to domain-specific JSON files
+5. **Feature Engineering**: Modify domain-specific feature extractors
+6. **New Domains**: Create new directories following the existing pattern
