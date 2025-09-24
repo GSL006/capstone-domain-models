@@ -4,7 +4,7 @@ import os
 from collections import Counter
 
 def extract_random_entries(input_file='economics_papers.json', 
-                          output_file='random_papers.json', num_papers=5):
+                          output_file='random_papers.json', num_papers=1000):
     """
     Extract random entries from the economics dataset that have all required fields
     and save them to a new JSON file.

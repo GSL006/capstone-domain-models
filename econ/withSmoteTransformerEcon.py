@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoTokenizer, AutoModel, AutoConfig
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
 from imblearn.over_sampling import SMOTE
@@ -17,8 +17,12 @@ import os
 import nltk
 from nltk.tokenize import sent_tokenize, word_tokenize
 from nltk.corpus import stopwords
+import gc
+import psutil
 
 # Download NLTK resources if needed
+
+nltk.download('punkt_tab')
 try:
     nltk.data.find('tokenizers/punkt')
 except LookupError:
@@ -450,30 +454,36 @@ class FeatureFusionLayer(nn.Module):
         self.dropout = nn.Dropout(0.2)
         
     def forward(self, bert_embedding, handcrafted_features):
-        # Project both feature types to the same dimension
-        bert_proj = self.bert_projection(bert_embedding)
+        # Check if inputs are 2D or 3D, and project
+        bert_proj = self.bert_projection(bert_embedding)            # [batch, fusion_dim] or [batch, seq, fusion_dim]
         handcrafted_proj = self.handcrafted_projection(handcrafted_features)
-        
-        # Reshape for attention
-        bert_proj = bert_proj.unsqueeze(0)  # [1, batch_size, fusion_dim]
-        handcrafted_proj = handcrafted_proj.unsqueeze(0)  # [1, batch_size, fusion_dim]
-        
-        # Cross-attention between features
-        attn_output, _ = self.attention(bert_proj, handcrafted_proj, handcrafted_proj)
-        attn_output = attn_output.squeeze(0)  # [batch_size, fusion_dim]
-        
-        # Calculate gate values for feature importance
-        combined = torch.cat([bert_proj.squeeze(0), handcrafted_proj.squeeze(0)], dim=-1)
-        gate_values = self.gate(combined)
-        
+
+        # Ensure 3D shape: [batch_size, seq_len, fusion_dim]
+        if bert_proj.dim() == 2:
+            bert_proj = bert_proj.unsqueeze(1)  # Add seq_len = 1
+        if handcrafted_proj.dim() == 2:
+            handcrafted_proj = handcrafted_proj.unsqueeze(1)
+
+        # Apply attention (batch_first=True)
+        attn_output, _ = self.attention(
+            bert_proj, handcrafted_proj, handcrafted_proj
+        )  # Output: [batch_size, seq_len, fusion_dim]
+
+        # Remove seq_len dim if it is 1
+        attn_output = attn_output.squeeze(1)
+        bert_proj = bert_proj.squeeze(1)
+        handcrafted_proj = handcrafted_proj.squeeze(1)
+
         # Gated fusion
-        fused = gate_values * bert_proj.squeeze(0) + (1 - gate_values) * handcrafted_proj.squeeze(0)
-        
-        # Normalization and dropout
+        combined = torch.cat([bert_proj, handcrafted_proj], dim=-1)  # [batch_size, 2*fusion_dim]
+        gate_values = self.gate(combined)
+        fused = gate_values * bert_proj + (1 - gate_values) * handcrafted_proj
         output = self.layer_norm(fused)
         output = self.dropout(output)
-        
+
         return output
+
+
 
 class HierarchicalAttention(nn.Module):
     """
@@ -498,132 +508,111 @@ class HierarchicalAttention(nn.Module):
     def forward(self, word_embeddings, attention_mask):
         """
         Args:
-            word_embeddings: Tensor of shape [batch_size, max_sections, max_sents, max_words, hidden_dim]
-            attention_mask: Tensor of shape [batch_size, max_sections, max_sents, max_words]
+            word_embeddings: [batch_size, max_sections, max_sents, max_words, hidden_dim]
+            attention_mask:  [batch_size, max_sections, max_sents, max_words]
         """
         batch_size, max_sections, max_sents, max_words, hidden_dim = word_embeddings.shape
-        doc_embeddings = []
+        section_embeddings = []
 
         for b in range(batch_size):
-            section_embeddings = []
-            for s in range(max_sections):
-                sentence_embeddings = []
-                for i in range(max_sents):
-                    words = word_embeddings[b, s, i]  # [max_words, hidden_dim]
-                    mask = attention_mask[b, s, i]    # [max_words]
+            sentence_embeddings = []
 
+            for s in range(max_sections):
+                sent_embeddings = []
+
+                for i in range(max_sents):
+                    words = word_embeddings[b, s, i]           # [max_words, hidden_dim]
+                    mask = attention_mask[b, s, i]             # [max_words]
+
+                    if words.dim() == 3 and words.shape[0] == 1:
+                        words = words.squeeze(0)
                     if mask.sum() > 0:
+                        words = words.unsqueeze(1)  # [max_words, 1, hidden_dim]
+                        words=words
                         key_padding_mask = (mask == 0).unsqueeze(0)  # [1, max_words]
-                        words = words.unsqueeze(1)                  # [max_words, 1, hidden_dim]
-                        words = words.transpose(0, 1)               # [1, max_words, hidden_dim] -> [seq_len, batch, embed]
-                        words = words.transpose(0, 1)               # Final: [max_words, 1, hidden_dim]
 
                         attn_output, _ = self.word_attention(
                             words, words, words,
                             key_padding_mask=key_padding_mask
                         )
                         attn_output = attn_output.squeeze(1)  # [max_words, hidden_dim]
+
                         sent_embedding = (attn_output * mask.unsqueeze(-1)).sum(dim=0) / (mask.sum() + 1e-10)
                     else:
-                        sent_embedding = torch.zeros(hidden_dim, device=word_embeddings.device)
-                    sentence_embeddings.append(sent_embedding)
+                        sent_embedding = torch.zeros(hidden_dim, device=words.device)
 
-                if sentence_embeddings:
-                    section_sent_embeddings = torch.stack(sentence_embeddings)  # [max_sents, hidden_dim]
-                    sent_mask = (attention_mask[b, s].sum(dim=1) > 0).float()   # [max_sents]
+                    sent_embeddings.append(sent_embedding)
+
+                if sent_embeddings:
+                    section_sent_embeddings = torch.stack(sent_embeddings)  # [max_sents, hidden_dim]
+                    sent_mask = (attention_mask[b, s].sum(dim=1) > 0).float()  # [max_sents]
 
                     if sent_mask.sum() > 0:
-                        key_padding_mask = (sent_mask == 0).unsqueeze(0)  # [1, max_sents]
                         section_sent_embeddings = section_sent_embeddings.unsqueeze(1)  # [max_sents, 1, hidden_dim]
-                        section_sent_embeddings = section_sent_embeddings.transpose(0, 1)  # [1, max_sents, hidden_dim]
-                        section_sent_embeddings = section_sent_embeddings.transpose(0, 1)  # Final: [max_sents, 1, hidden_dim]
+                        key_padding_mask = (sent_mask == 0).unsqueeze(0)  # [1, max_sents]
 
-                        attn_output, _ = self.sentence_attention(
+                        sent_attn_output, _ = self.sentence_attention(
                             section_sent_embeddings, section_sent_embeddings, section_sent_embeddings,
                             key_padding_mask=key_padding_mask
                         )
-                        attn_output = attn_output.squeeze(1)  # [max_sents, hidden_dim]
-                        section_embedding = (attn_output * sent_mask.unsqueeze(-1)).sum(dim=0) / (sent_mask.sum() + 1e-10)
-                    else:
-                        section_embedding = torch.zeros(hidden_dim, device=word_embeddings.device)
-                    section_embeddings.append(section_embedding)
-                else:
-                    section_embeddings.append(torch.zeros(hidden_dim, device=word_embeddings.device))
+                        sent_attn_output = sent_attn_output.squeeze(1)
 
-            if section_embeddings:
-                doc_section_embeddings = torch.stack(section_embeddings)  # [max_sections, hidden_dim]
+                        section_embedding = (sent_attn_output * sent_mask.unsqueeze(-1)).sum(dim=0) / (sent_mask.sum() + 1e-10)
+                    else:
+                        section_embedding = torch.zeros(hidden_dim, device=section_sent_embeddings.device)
+                else:
+                    section_embedding = torch.zeros(hidden_dim, device=word_embeddings.device)
+
+                sentence_embeddings.append(section_embedding)
+
+            if sentence_embeddings:
+                doc_section_embeddings = torch.stack(sentence_embeddings)  # [max_sections, hidden_dim]
                 section_mask = (attention_mask[b].sum(dim=(1, 2)) > 0).float()  # [max_sections]
 
                 if section_mask.sum() > 0:
-                    key_padding_mask = (section_mask == 0).unsqueeze(0)  # [1, max_sections]
                     doc_section_embeddings = doc_section_embeddings.unsqueeze(1)  # [max_sections, 1, hidden_dim]
-                    doc_section_embeddings = doc_section_embeddings.transpose(0, 1)  # [1, max_sections, hidden_dim]
-                    doc_section_embeddings = doc_section_embeddings.transpose(0, 1)  # Final: [max_sections, 1, hidden_dim]
+                    key_padding_mask = (section_mask == 0).unsqueeze(0)  # [1, max_sections]
 
-                    attn_output, _ = self.section_attention(
+                    section_attn_output, _ = self.section_attention(
                         doc_section_embeddings, doc_section_embeddings, doc_section_embeddings,
                         key_padding_mask=key_padding_mask
                     )
-                    attn_output = attn_output.squeeze(1)  # [max_sections, hidden_dim]
-                    doc_embedding = (attn_output * section_mask.unsqueeze(-1)).sum(dim=0) / (section_mask.sum() + 1e-10)
+                    section_attn_output = section_attn_output.squeeze(1)
+
+                    doc_embedding = (section_attn_output * section_mask.unsqueeze(-1)).sum(dim=0) / (section_mask.sum() + 1e-10)
                 else:
-                    doc_embedding = torch.zeros(hidden_dim, device=word_embeddings.device)
+                    doc_embedding = torch.zeros(hidden_dim, device=doc_section_embeddings.device)
             else:
                 doc_embedding = torch.zeros(hidden_dim, device=word_embeddings.device)
 
-            doc_embeddings.append(doc_embedding)
+            section_embeddings.append(doc_embedding)
 
-        return torch.stack(doc_embeddings)  # [batch_size, hidden_dim]
+        return torch.stack(section_embeddings)
 
 
-
-class HierarchicalBiasPredictionModel(nn.Module):
-    def __init__(self, bert_model_name, num_classes=3, dropout_rate=0.3, feature_dim=20):
-        super(HierarchicalBiasPredictionModel, self).__init__()
-        self.bert = AutoModel.from_pretrained(bert_model_name)
-        self.dropout = nn.Dropout(dropout_rate)
-        
-        # Dimensions
-        self.bert_dim = self.bert.config.hidden_size
-        self.handcrafted_dim = feature_dim
-        self.fusion_dim = 256
-        
-        # Hierarchical attention
-        self.hierarchical_attention = HierarchicalAttention(hidden_dim=self.bert_dim)
-        
-        # Feature fusion layer
-        self.feature_fusion = FeatureFusionLayer(
-            bert_dim=self.bert_dim, 
-            handcrafted_dim=self.handcrafted_dim,
-            fusion_dim=self.fusion_dim
-        )
-        
-        # Classification layers
-        self.fc1 = nn.Linear(self.fusion_dim, 128)
-        self.fc2 = nn.Linear(128, num_classes)
-        self.relu = nn.ReLU()
-        self.layer_norm = nn.LayerNorm(128)
-        
-    def forward(self, input_ids, attention_mask, handcrafted_features):
-        batch_size = input_ids.size(0)
-        
-        # Reshape for BERT processing
-        # Original shape: [batch_size, max_sections, max_sents, max_seq_length]
-        max_sections, max_sents, max_seq_length = input_ids.size(1), input_ids.size(2), input_ids.size(3)
-        
-        # Process each sentence with BERT
-        word_embeddings = []
-        for b in range(batch_size):
-            section_embeddings = []
-            for s in range(max_sections):
-                sentence_embeddings = []
-                for i in range(max_sents):
-                    # Process single sentence through BERT
-                    input_ids_sent = input_ids[b, s, i].unsqueeze(0)  # [1, max_seq_length]
-                    attention_mask_sent = attention_mask[b, s, i].unsqueeze(0)  # [1, max_seq_length]
-                    
-                    # Skip processing empty sentences to save computation
-                    if attention_mask_sent.sum() > 0:
+# Add memory optimization for forward pass in HierarchicalBiasPredictionModel
+def forward_with_memory_optimization(self, input_ids, attention_mask, handcrafted_features):
+    batch_size = input_ids.size(0)
+    
+    # Reshape for BERT processing
+    # Original shape: [batch_size, max_sections, max_sents, max_seq_length]
+    max_sections, max_sents, max_seq_length = input_ids.size(1), input_ids.size(2), input_ids.size(3)
+    
+    # Process each sentence with BERT
+    word_embeddings = []
+    for b in range(batch_size):
+        section_embeddings = []
+        for s in range(max_sections):
+            sentence_embeddings = []
+            for i in range(max_sents):
+                # Process single sentence through BERT
+                input_ids_sent = input_ids[b, s, i].unsqueeze(0)  # [1, max_seq_length]
+                attention_mask_sent = attention_mask[b, s, i].unsqueeze(0)  # [1, max_seq_length]
+                
+                # Skip processing empty sentences to save memory
+                if attention_mask_sent.sum() > 0:
+                    # Process with BERT but clear cache after each step
+                    with torch.no_grad():  # Use no_grad for inference parts
                         outputs = self.bert(
                             input_ids=input_ids_sent, 
                             attention_mask=attention_mask_sent,
@@ -631,45 +620,100 @@ class HierarchicalBiasPredictionModel(nn.Module):
                         )
                         
                         # Get token embeddings from last layer
-                        token_embeddings = outputs.last_hidden_state[0]  # [max_seq_length, hidden_size]
-                    else:
-                        # Create zero embeddings for empty sentences
-                        token_embeddings = torch.zeros(
-                            max_seq_length, self.bert_dim, device=input_ids.device)
-                    
-                    sentence_embeddings.append(token_embeddings)
+                        token_embeddings = outputs.last_hidden_state.squeeze(0).detach()  # [max_seq_length, hidden_size]
+                        
+                        # Explicitly delete to free memory
+                        del outputs
+                else:
+                    # Create zero embeddings for empty sentences
+                    token_embeddings = torch.zeros(
+                        max_seq_length, self.bert_dim, device=input_ids.device)
                 
-                # Stack to get all sentence embeddings for this section
-                section_embeddings.append(torch.stack(sentence_embeddings))
+                sentence_embeddings.append(token_embeddings)
             
-            # Stack to get all section embeddings for this document
+            # Stack to get all sentence embeddings for this section
+            if sentence_embeddings:
+                section_embeddings.append(torch.stack(sentence_embeddings))
+            else:
+                # Create empty section if no sentences
+                empty_section = torch.zeros(
+                    max_sents, max_seq_length, self.bert_dim, device=input_ids.device)
+                section_embeddings.append(empty_section)
+        
+        # Stack to get all section embeddings for this document
+        if section_embeddings:
             word_embeddings.append(torch.stack(section_embeddings))
-        
-        # Stack to get embeddings for the entire batch
-        word_embeddings = torch.stack(word_embeddings)  # [batch_size, max_sections, max_sents, max_seq_length, hidden_dim]
-        
-        # Apply hierarchical attention
-        doc_embeddings = []
-        for b in range(batch_size):
-            doc_embedding = self.hierarchical_attention(
-                word_embeddings[b].unsqueeze(0),  # Add batch dimension
-                attention_mask[b].unsqueeze(0)
-            )
-            doc_embeddings.append(doc_embedding)
-        
-        doc_embeddings = torch.stack(doc_embeddings)
-        
-        # Feature fusion
-        fused_features = self.feature_fusion(doc_embeddings, handcrafted_features)
-        
-        # Final classification
-        x = self.fc1(fused_features)
-        x = self.relu(x)
-        x = self.layer_norm(x)
-        x = self.dropout(x)
-        output = self.fc2(x)
-        
-        return output
+        else:
+            # Create empty document if no sections
+            empty_doc = torch.zeros(
+                max_sections, max_sents, max_seq_length, self.bert_dim, device=input_ids.device)
+            word_embeddings.append(empty_doc)
+    
+    # Stack to get embeddings for the entire batch
+    word_embeddings = torch.stack(word_embeddings)  # [batch_size, max_sections, max_sents, max_seq_length, hidden_dim]
+    
+    # Apply hierarchical attention
+    doc_embeddings = []
+    for b in range(batch_size):
+        doc_embedding = self.hierarchical_attention(
+            word_embeddings[b].unsqueeze(0),  # Add batch dimension
+            attention_mask[b].unsqueeze(0)
+        )
+        doc_embeddings.append(doc_embedding)
+    
+    # Free memory
+    del word_embeddings
+    
+    doc_embeddings = torch.cat(doc_embeddings, dim=0)
+    
+    # Feature fusion
+    fused_features = self.feature_fusion(doc_embeddings, handcrafted_features)
+    
+    # Free memory
+    del doc_embeddings
+    
+    # Final classification
+    x = self.fc1(fused_features)
+    x = self.relu(x)
+    x = self.layer_norm(x)
+    x = self.dropout(x)
+    output = self.fc2(x)
+    
+    return output
+
+
+# Modify the HierarchicalBiasPredictionModel class to use memory-optimized forward method
+class HierarchicalBiasPredictionModel(nn.Module):
+    def __init__(self, bert_model_name, num_classes=3, dropout_rate=0.3, feature_dim=20):
+        super(HierarchicalBiasPredictionModel, self).__init__()
+        print("Loading BERT (standard complexity)")
+        self.bert = AutoModel.from_pretrained(bert_model_name)
+
+        self.dropout = nn.Dropout(dropout_rate)
+
+        self.bert_dim = self.bert.config.hidden_size  # 768 for standard BERT
+        self.handcrafted_dim = feature_dim
+        self.fusion_dim = 256  # Standard fusion dimension
+
+        # Hierarchical attention
+        self.hierarchical_attention = HierarchicalAttention(hidden_dim=self.bert_dim)
+
+        # Feature fusion layer
+        self.feature_fusion = FeatureFusionLayer(
+            bert_dim=self.bert_dim,
+            handcrafted_dim=self.handcrafted_dim,
+            fusion_dim=self.fusion_dim
+        )
+
+        # Classification layers - standard dimensions
+        self.fc1 = nn.Linear(self.fusion_dim, 128)
+        self.fc2 = nn.Linear(128, num_classes)
+        self.relu = nn.ReLU()
+        self.layer_norm = nn.LayerNorm(128)
+
+        # Use memory-optimized forward
+        self.forward = forward_with_memory_optimization.__get__(self)
+    
 # Enhanced model training function with gradient accumulation for larger models
 def train_hierarchical_model(train_dataloader, val_dataloader, model, device, 
                            epochs=5, lr=2e-5, accumulation_steps=2):
@@ -870,9 +914,7 @@ def load_papers_from_json(json_file_path):
     pandas.DataFrame
         DataFrame containing paper texts and bias labels
     """
-    import pandas as pd
-    import json
-    import os
+    print(f"Loading papers from {json_file_path}...")
     
     # Check if file exists
     if not os.path.exists(json_file_path):
@@ -889,90 +931,159 @@ def load_papers_from_json(json_file_path):
         
         # Case 1: List of paper objects
         if isinstance(data, list):
-            for i, paper in enumerate(data):
-                if not isinstance(paper, dict):
-                    print(f"Warning: Item at index {i} is not a dictionary. Skipping.")
-                    continue
+            for item in data:
+                if isinstance(item, dict):
+                    # Extract text content
+                    text_content = ""
                     
-                # Extract text and label
-                text = paper.get('Body', paper.get('text', paper.get('content', paper.get('abstract', ''))))
-                
-                # Extract label - could be under different keys
-                label = paper.get('OverallBias', paper.get('bias_label', paper.get('bias_type', 
-                                  paper.get('Cognitive Bias', paper.get('Publication Bias', 
-                                  paper.get('No Bias', 0))))))
-                
-                # Convert string labels to integers if needed
-                if isinstance(label, str):
-                    label_map = {
-                        'no_bias': 0, 'none': 0, 'no bias': 0, 'nobias': 0,
-                        'cognitive_bias': 1, 'cognitive': 1, 'cognitive bias': 1, 'cognitivebias': 1,
-                        'publication_bias': 2, 'publication': 2, 'publication bias': 2, 'publicationbias': 2
-                    }
-                    label = label_map.get(label.strip().lower(), 0)
-                
-                # If label is float (like in sample data), convert to int
-                if isinstance(label, float):
-                    label = int(label)
-                
-                papers.append({'text': text, 'label': label})
-                
-        # Case 2: Dictionary with paper data
-        elif isinstance(data, dict):
-            # If it's a dictionary containing a list of papers
-            if 'papers' in data and isinstance(data['papers'], list):
-                papers_data = data['papers']
-                for i, paper in enumerate(papers_data):
-                    if not isinstance(paper, dict):
-                        print(f"Warning: Item at index {i} in 'papers' is not a dictionary. Skipping.")
+                    # Try different field names for text content
+                    text_fields = ['Body', 'text', 'content', 'abstract', 'full_text', 'paper_text']
+                    for field in text_fields:
+                        if field in item and item[field]:
+                            text_content = str(item[field])
+                            break
+                    
+                    if not text_content:
                         continue
-                        
-                    text = paper.get('text', paper.get('content', paper.get('abstract', '')))
-                    label = paper.get('label', paper.get('bias_label', paper.get('bias_type', 
-                                      paper.get('CognitiveBias', paper.get('PublicationBias', 
-                                      paper.get('NoBias', 0))))))
                     
-                    # Convert string labels if needed
-                    if isinstance(label, str):
-                        label_map = {
-                            'no_bias': 0, 'none': 0, 'no bias': 0, 'nobias': 0,
-                            'cognitive_bias': 1, 'cognitive': 1, 'cognitive bias': 1, 'cognitivebias': 1,
-                            'publication_bias': 2, 'publication': 2, 'publication bias': 2, 'publicationbias': 2
-                        }
-                        label = label_map.get(label.lower(), 0)
+                    # Extract bias label
+                    label = None
                     
-                    # If label is float, convert to int
-                    if isinstance(label, float):
-                        label = int(label)
+                    # Try different field names for labels
+                    if 'OverallBias' in item:
+                        bias_str = str(item['OverallBias']).strip()
+                        if bias_str == "No Bias":
+                            label = 0
+                        elif bias_str in ["Cognitive Bias", "CognitiveBias"]:
+                            label = 1
+                        elif bias_str in ["Publication Bias", "PublicationBias", "Selection Bias", "SelectionBias"]:
+                            label = 2
+                    elif 'Overall Bias' in item:
+                        bias_str = str(item['Overall Bias']).strip()
+                        if bias_str == "No Bias":
+                            label = 0
+                        elif bias_str in ["Cognitive Bias", "CognitiveBias"]:
+                            label = 1
+                        elif bias_str in ["Publication Bias", "PublicationBias", "Selection Bias", "SelectionBias"]:
+                            label = 2
+                    elif 'label' in item:
+                        try:
+                            label = int(item['label'])
+                            if label not in [0, 1, 2]:
+                                continue
+                        except (ValueError, TypeError):
+                            continue
+                    elif 'bias_type' in item:
+                        bias_str = str(item['bias_type']).strip().lower()
+                        if bias_str in ["no bias", "none", "0"]:
+                            label = 0
+                        elif bias_str in ["cognitive bias", "cognitive", "1"]:
+                            label = 1
+                        elif bias_str in ["publication bias", "selection bias", "publication", "selection", "2"]:
+                            label = 2
+                    # Use numeric bias fields if available
+                    elif 'NoBias' in item and 'CognitiveBias' in item and 'PublicationBias' in item:
+                        try:
+                            no_bias = float(item['NoBias'])
+                            cognitive_bias = float(item['CognitiveBias'])
+                            publication_bias = float(item['PublicationBias'])
+                            
+                            # Find the maximum value
+                            max_val = max(no_bias, cognitive_bias, publication_bias)
+                            if max_val == no_bias:
+                                label = 0
+                            elif max_val == cognitive_bias:
+                                label = 1
+                            else:
+                                label = 2
+                        except (ValueError, TypeError):
+                            continue
                     
-                    papers.append({'text': text, 'label': label})
-            # If it's a dictionary with IDs as keys
-            else:
-                for paper_id, paper_data in data.items():
-                    if isinstance(paper_data, dict):
-                        text = paper_data.get('text', paper_data.get('content', paper_data.get('abstract', '')))
-                        label = paper_data.get('label', paper_data.get('bias_label', paper_data.get('bias_type', 
-                                          paper_data.get('CognitiveBias', paper_data.get('PublicationBias', 
-                                          paper_data.get('NoBias', 0))))))
-                        
-                        # Convert string labels if needed
-                        if isinstance(label, str):
-                            label_map = {
-                                'no_bias': 0, 'none': 0, 'no bias': 0, 'nobias': 0,
-                                'cognitive_bias': 1, 'cognitive': 1, 'cognitive bias': 1, 'cognitivebias': 1,
-                                'publication_bias': 2, 'publication': 2, 'publication bias': 2, 'publicationbias': 2
-                            }
-                            label = label_map.get(label.lower(), 0)
-                        
-                        # If label is float, convert to int
-                        if isinstance(label, float):
-                            label = int(label)
-                        
-                        papers.append({'text': text, 'label': label})
+                    if label is not None:
+                        papers.append({
+                            'text': text_content,
+                            'label': label
+                        })
         
-        # If no valid structure found
+        # Case 2: Dictionary with papers as values
+        elif isinstance(data, dict):
+            # Check if it's a dictionary of papers
+            for key, item in data.items():
+                if isinstance(item, dict):
+                    # Extract text content
+                    text_content = ""
+                    
+                    # Try different field names for text content
+                    text_fields = ['Body', 'text', 'content', 'abstract', 'full_text', 'paper_text']
+                    for field in text_fields:
+                        if field in item and item[field]:
+                            text_content = str(item[field])
+                            break
+                    
+                    if not text_content:
+                        continue
+                    
+                    # Extract bias label
+                    label = None
+                    
+                    # Try different field names for labels
+                    if 'OverallBias' in item:
+                        bias_str = str(item['OverallBias']).strip()
+                        if bias_str == "No Bias":
+                            label = 0
+                        elif bias_str in ["Cognitive Bias", "CognitiveBias"]:
+                            label = 1
+                        elif bias_str in ["Publication Bias", "PublicationBias", "Selection Bias", "SelectionBias"]:
+                            label = 2
+                    elif 'Overall Bias' in item:
+                        bias_str = str(item['Overall Bias']).strip()
+                        if bias_str == "No Bias":
+                            label = 0
+                        elif bias_str in ["Cognitive Bias", "CognitiveBias"]:
+                            label = 1
+                        elif bias_str in ["Publication Bias", "PublicationBias", "Selection Bias", "SelectionBias"]:
+                            label = 2
+                    elif 'label' in item:
+                        try:
+                            label = int(item['label'])
+                            if label not in [0, 1, 2]:
+                                continue
+                        except (ValueError, TypeError):
+                            continue
+                    elif 'bias_type' in item:
+                        bias_str = str(item['bias_type']).strip().lower()
+                        if bias_str in ["no bias", "none", "0"]:
+                            label = 0
+                        elif bias_str in ["cognitive bias", "cognitive", "1"]:
+                            label = 1
+                        elif bias_str in ["publication bias", "selection bias", "publication", "selection", "2"]:
+                            label = 2
+                    # Use numeric bias fields if available
+                    elif 'NoBias' in item and 'CognitiveBias' in item and 'PublicationBias' in item:
+                        try:
+                            no_bias = float(item['NoBias'])
+                            cognitive_bias = float(item['CognitiveBias'])
+                            publication_bias = float(item['PublicationBias'])
+                            
+                            # Find the maximum value
+                            max_val = max(no_bias, cognitive_bias, publication_bias)
+                            if max_val == no_bias:
+                                label = 0
+                            elif max_val == cognitive_bias:
+                                label = 1
+                            else:
+                                label = 2
+                        except (ValueError, TypeError):
+                            continue
+                    
+                    if label is not None:
+                        papers.append({
+                            'text': text_content,
+                            'label': label
+                        })
+        
         else:
-            print(f"Error: Unsupported JSON structure in {json_file_path}")
+            print("Error: Unrecognized JSON format")
             return pd.DataFrame(columns=['text', 'label'])
         
         # Create DataFrame
@@ -980,16 +1091,16 @@ def load_papers_from_json(json_file_path):
         
         # Validate data
         if len(df) == 0:
-            print(f"Warning: No valid paper data found in {json_file_path}")
+            print("Warning: No valid papers found in the JSON file")
             return pd.DataFrame(columns=['text', 'label'])
             
         if 'text' not in df.columns:
-            print(f"Warning: 'text' column not found in the JSON data from {json_file_path}")
-            df['text'] = ""
+            print("Error: No text column found after processing")
+            return pd.DataFrame(columns=['text', 'label'])
         
         if 'label' not in df.columns:
-            print(f"Warning: 'label' column not found in the JSON data from {json_file_path}")
-            df['label'] = 0
+            print("Error: No label column found after processing")
+            return pd.DataFrame(columns=['text', 'label'])
         
         # Ensure text is string and label is integer
         df['text'] = df['text'].astype(str)
@@ -999,22 +1110,27 @@ def load_papers_from_json(json_file_path):
         original_count = len(df)
         df = df[df['text'].str.strip().str.len() > 0].reset_index(drop=True)
         if len(df) < original_count:
-            print(f"Info: Removed {original_count - len(df)} rows with empty text")
+            print(f"Removed {original_count - len(df)} papers with empty text")
         
         # Validate label values
         if not all(df['label'].isin([0, 1, 2])):
             invalid_labels = df[~df['label'].isin([0, 1, 2])]['label'].unique()
-            print(f"Warning: Found invalid label values: {invalid_labels}. Converting to 0.")
-            df.loc[~df['label'].isin([0, 1, 2]), 'label'] = 0
+            print(f"Warning: Found invalid labels: {invalid_labels}")
+            df = df[df['label'].isin([0, 1, 2])].reset_index(drop=True)
         
-        print(f"Successfully loaded {len(df)} papers from {json_file_path}")
+        print(f"Successfully loaded {len(df)} economics papers from {json_file_path}")
+        print("Class distribution:")
+        label_names = ['No Bias', 'Cognitive Bias', 'Selection/Publication Bias']
+        for label, count in df['label'].value_counts().sort_index().items():
+            print(f"  {label_names[label]}: {count} papers")
+        
         return df
         
     except json.JSONDecodeError as e:
         print(f"Error: {json_file_path} is not a valid JSON file: {str(e)}")
         return pd.DataFrame(columns=['text', 'label'])
     except Exception as e:
-        print(f"Error loading papers from {json_file_path}: {str(e)}")
+        print(f"Error loading economics papers from {json_file_path}: {str(e)}")
         return pd.DataFrame(columns=['text', 'label'])
 
 # Function to analyze economics-specific feature importance
@@ -1077,10 +1193,23 @@ def analyze_economics_feature_importance(model, feature_names):
     
     return importance_df, category_df
 
+# Add a utility function to monitor memory usage
+def print_memory_usage():
+    # Get CPU memory info
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    mem_mb = mem_info.rss / 1024 / 1024  # Convert to MB
+    
+    print(f"CPU Memory Usage: {mem_mb:.2f} MB")
+    
+    # Force garbage collection
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
 def main():
-    # Set up device
-    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    device="cpu"
+    # Prefer GPU if available, otherwise CPU
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
     # Feature names for the economics-specific extractor
@@ -1340,44 +1469,53 @@ def main():
         print(f"Error in data balancing process: {e}")
         print("Proceeding with original imbalanced data")
     
+    # Memory optimization - clear unnecessary variables
+    del papers_df, handcrafted_features, features_array, labels_array
+    
     # Setup tokenizer
     print("Setting up tokenizer...")
     try:
-        # Use SciBERT which is better for scientific papers
-        tokenizer = AutoTokenizer.from_pretrained('allenai/scibert_scivocab_uncased')
+        # Use SciBERT which is better for scientific papers - with CPU settings
+        model_name = 'allenai/scibert_scivocab_uncased'
+        print(f"Loading tokenizer: {model_name}")
+        tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
     except Exception as e:
         print(f"Error loading tokenizer: {e}")
         print("Falling back to bert-base-uncased")
-        tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
+        tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased', use_fast=True)
     
-    # Create hierarchical datasets
+    # Reduce model complexity to save memory for the available device
+    print(f"Using reduced model complexity for device: {device}")
+    max_seq_length = 64   # Reduced from 128
+    max_sections = 2      # Reduced from 4
+    max_sents = 4         # Reduced from 8
+    
+    # Create hierarchical datasets with reduced complexity
     print("Creating hierarchical datasets...")
     train_dataset = HierarchicalResearchPaperDataset(
         train_texts, train_labels, tokenizer, train_features,
-        max_seq_length=128,  # Reduced for efficiency
-        max_sections=4,      # Focus on key sections
-        max_sents=8          # Focus on key sentences
+        max_seq_length=max_seq_length,
+        max_sections=max_sections,
+        max_sents=max_sents
     )
     
     val_dataset = HierarchicalResearchPaperDataset(
         val_texts, y_val, tokenizer, val_features,
-        max_seq_length=128,
-        max_sections=4,
-        max_sents=8
+        max_seq_length=max_seq_length,
+        max_sections=max_sections,
+        max_sents=max_sents
     )
     
     test_dataset = HierarchicalResearchPaperDataset(
         test_texts, y_test, tokenizer, test_features,
-        max_seq_length=128,
-        max_sections=4,
-        max_sents=8
+        max_seq_length=max_seq_length,
+        max_sections=max_sections,
+        max_sents=max_sents
     )
     
-    # Create data loaders with smaller batch size due to increased memory usage
-    batch_size = min(4, len(train_dataset)) if torch.cuda.is_available() else min(2, len(train_dataset))
-    if batch_size == 0:  # Handle empty datasets
-        batch_size = 1
-    print(f"Using batch size: {batch_size}")
+    # Use very small batch size for low-memory devices
+    batch_size = 1  # Minimum batch size
+    print(f"Using batch size: {batch_size} for device: {device}")
     
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size)
@@ -1389,7 +1527,8 @@ def main():
         model = HierarchicalBiasPredictionModel(
             'allenai/scibert_scivocab_uncased', 
             num_classes=3,
-            feature_dim=len(feature_names)
+            feature_dim=len(feature_names),
+            dropout_rate=0.3
         )
     except Exception as e:
         print(f"Error loading SciBERT for hierarchical model: {e}")
@@ -1397,17 +1536,21 @@ def main():
         model = HierarchicalBiasPredictionModel(
             'bert-base-uncased', 
             num_classes=3,
-            feature_dim=len(feature_names)
+            feature_dim=len(feature_names),
+            dropout_rate=0.3
         )
-        
-    model.to(device)
     
-    # Train hierarchical model
+    # Ensure model is on the selected device
+    model.to(device)
+    print(f"Model is on device: {next(model.parameters()).device}")
+    
+    # Train hierarchical model with memory optimization
     print("Training hierarchical model...")
     model = train_hierarchical_model(
         train_dataloader, val_dataloader, model, device, 
-        epochs=3,  # Reduced epochs for faster execution
-        accumulation_steps=2  # Gradient accumulation for larger model
+        epochs=5,  # Standard training epochs
+        accumulation_steps=4,  # Accumulation steps for memory optimization
+        lr=5e-5  # Standard learning rate
     )
     
     # Evaluate hierarchical model
@@ -1422,4 +1565,12 @@ def main():
     print("Done!")
 
 if __name__ == "__main__":
+    # Set the Python multiprocessing method to avoid issues on Windows
+    import multiprocessing
+    try:
+        multiprocessing.set_start_method('spawn')
+    except RuntimeError:
+        pass
+    
+    # Run the main function
     main()

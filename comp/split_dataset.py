@@ -4,7 +4,7 @@ from collections import Counter
 
 
 def extract_random_entries(input_file='computer_science_papers.json', 
-                          output_file='random_papers.json', num_papers=5):
+                          output_file='random_papers.json', num_papers=1000):
     """
     Extract random entries from the computer science dataset
     
@@ -88,6 +88,6 @@ if __name__ == "__main__":
         print("\n" + "=" * 60)
         print("Random entries extraction completed!")
         print("\nFile created:")
-        print("- random_papers.json (5 random papers for testing)")
+        print("- random_papers.json (1000 random papers for testing)")
     else:
         print("Random entries extraction failed!")

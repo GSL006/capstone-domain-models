@@ -6,6 +6,8 @@ from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 import json
 import os
+import sys
+import contextlib
 
 # Import our custom classes from the training script
 from withSmoteTransformerComp import (
@@ -30,22 +32,27 @@ def load_papers(json_file_path):
             if not isinstance(paper, dict):
                 continue
             
-            # Extract text (Body field) - INPUT for model
-            text = paper.get('Body', '')
-            if not text:
-                continue
-            
-            # Extract reason - INPUT for feature extraction
+            # Extract fields
+            body = paper.get('Body', '')
             reason = paper.get('Reason', '')
+            true_label = paper.get('Overall Bias') or paper.get('OverallBias')
             
-            # Extract true label for accuracy calculation
-            true_label = paper.get('Overall Bias') or paper.get('OverallBias', '')
-            
-            papers.append({
-                'text': text,
-                'reason': reason,
-                'true_label': true_label
-            })
+            # Only process papers with body
+            if body and body.strip():
+                text = body
+                if reason and reason.strip():
+                    text += " " + reason
+                
+                paper_data = {
+                    'text': text,
+                    'reason': reason
+                }
+                
+                # Add true label if available
+                if true_label:
+                    paper_data['true_label'] = true_label
+                
+                papers.append(paper_data)
         
         # Convert to DataFrame
         df = pd.DataFrame(papers)
@@ -59,22 +66,25 @@ def load_trained_model(model_path, device):
     """Load the trained CS bias prediction model"""
     
     try:
-        # Load model info (contains everything including label mapping)
-        model_info = torch.load(model_path, map_location=device)
-        
-        # Get label mapping from model info
-        label_mapping = model_info['label_mapping']
-        
-        # Get model parameters
-        num_classes = model_info['num_classes']
-        feature_names = model_info['feature_names']
-        
-        # Initialize model with bert-base-uncased to match training
-        model = CSBiasPredictionModel(
-            'bert-base-uncased',
-            num_classes=num_classes,
-            feature_dim=len(feature_names)
-        )
+        # Suppress loading messages
+        with open(os.devnull, 'w') as devnull:
+            with contextlib.redirect_stdout(devnull):
+                # Load model info (contains everything including label mapping)
+                model_info = torch.load(model_path, map_location=device)
+                
+                # Get label mapping from model info
+                label_mapping = model_info['label_mapping']
+                
+                # Get model parameters
+                num_classes = model_info['num_classes']
+                feature_names = model_info['feature_names']
+                
+                # Initialize model with bert-base-uncased to match training
+                model = CSBiasPredictionModel(
+                    'bert-base-uncased',
+                    num_classes=num_classes,
+                    feature_dim=len(feature_names)
+                )
         
         # Load trained weights
         model.load_state_dict(model_info['model_state_dict'])
@@ -121,27 +131,31 @@ def predict_papers(dataloader, model, device):
 
 
 def main():
+    if len(sys.argv) != 2:
+        return
+    
+    json_file_path = sys.argv[1]
+    
     # Set up device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # File paths
-    test_data_path = 'random_papers.json'
-    model_path = 'comp_sci.pt'
+    test_data_path = json_file_path
+    # Get the directory where this script is located
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    model_path = os.path.join(script_dir, 'comp_sci.pt')
     
     # Check if required files exist
     if not os.path.exists(test_data_path):
-        print(f"Error: {test_data_path} not found!")
         return
     
     if not os.path.exists(model_path):
-        print(f"Error: {model_path} not found!")
         return
     
     # Load papers
     test_df = load_papers(test_data_path)
     
     if len(test_df) == 0:
-        print("No valid papers found in the test file!")
         return
     
     # Load trained model
@@ -150,7 +164,6 @@ def main():
     )
     
     if model is None:
-        print("Failed to load model!")
         return
     
     # Create reverse label mapping (index to label name)
@@ -161,18 +174,19 @@ def main():
     test_features = []
     
     for _, row in test_df.iterrows():
-        features = extractor.extract_features(row['text'], row['reason'])
+        features = extractor.extract_features(row['text'])
         test_features.append(features)
     
-    test_features = np.array(test_features, dtype=np.float32)
+    # Convert features to numpy array
+    test_features = np.array(test_features)
     
-    # Setup tokenizer - use bert-base-uncased to match training
+    # Create tokenizer
     tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
     
-    # Create dataset with same parameters as training
-    max_seq_length = 64   # Match training parameters
-    max_sections = 3      # Match training parameters  
-    max_sents = 4         # Match training parameters
+    # Tokenization parameters (match training exactly)
+    max_seq_length = 64
+    max_sections = 3
+    max_sents = 3
     
     # Use dummy labels since we only need prediction
     dummy_labels = [0] * len(test_df)
@@ -187,48 +201,34 @@ def main():
         max_sents=max_sents
     )
     
-    # Use batch size 1 for stability
+    # Create DataLoader
     test_dataloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
     
-    # Get predictions
+    # Predict
     predictions = predict_papers(test_dataloader, model, device)
     
-    # Calculate accuracy if true labels are available
-    true_labels = test_df['true_label'].tolist()
-    if any(true_labels):  # Check if we have any true labels
-        # Convert true labels to indices
+    # Check if we have true labels for evaluation
+    if 'true_label' in test_df.columns:
         true_indices = []
         valid_predictions = []
         valid_true_labels = []
         
-        for i, true_label in enumerate(true_labels):
+        for i, (_, row) in enumerate(test_df.iterrows()):
+            true_label = row.get('true_label')
             if true_label and true_label.strip() and true_label in label_mapping:
                 true_indices.append(label_mapping[true_label])
                 valid_predictions.append(predictions[i])
                 valid_true_labels.append(true_label)
         
-        if len(true_indices) > 0:
-            # Calculate accuracy
-            correct = sum(1 for pred, true_idx in zip(valid_predictions, true_indices) if pred == true_idx)
-            accuracy = correct / len(true_indices)
-            
-            print(f"📊 Evaluation Results:")
-            print(f"Total papers evaluated: {len(valid_predictions)}")
-            print(f"Correct predictions: {correct}")
-            print(f"Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
-            
-            # Show class-wise breakdown
-            from collections import Counter
-            true_counts = Counter(valid_true_labels)
-            pred_labels = [reverse_mapping[pred] for pred in valid_predictions]
-            pred_counts = Counter(pred_labels)
-            
-            print(f"\n📈 Class Distribution:")
-            print(f"True labels: {dict(true_counts)}")
-            print(f"Predicted labels: {dict(pred_counts)}")
-        else:
-            print("⚠️ No valid labels found for accuracy calculation")
-    
+        # Just show predictions
+        for i, prediction in enumerate(predictions):
+            bias_type = reverse_mapping[prediction]
+            print(f"{bias_type}")
+    else:
+        # Just show predictions
+        for i, prediction in enumerate(predictions):
+            bias_type = reverse_mapping[prediction]
+            print(f"{bias_type}")
 
 if __name__ == "__main__":
     main()

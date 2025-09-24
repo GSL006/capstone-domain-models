@@ -25,6 +25,9 @@ joblib>=1.1.0
 regex>=2022.1.18
 tokenizers>=0.12.0
 
+# Web Interface
+streamlit>=1.28.0
+
 # Optional GPU Support (uncomment if using CUDA)
 # torch-audio>=0.12.0
 # torchvision>=0.13.0

@@ -9,7 +9,7 @@ import random
 import os
 
 def extract_random_entries(input_file='environmental_science_papers.json', 
-                          output_file='random_papers.json', num_papers=5):
+                          output_file='random_papers.json', num_papers=1000):
     """
     Extract random entries from the environmental science dataset.
     
@@ -20,7 +20,7 @@ def extract_random_entries(input_file='environmental_science_papers.json',
     output_file : str  
         Path where random papers will be saved
     num_papers : int
-        Number of papers to extract (default: 5)
+        Number of papers to extract (default: 1000)
         
     Returns:
     --------
@@ -131,14 +131,14 @@ def main():
     success = extract_random_entries(
         input_file='environmental_science_papers.json',
         output_file='random_papers.json',
-        num_papers=5
+        num_papers=1000
     )
     
     if success:
         print("\n🎉 Random paper extraction completed successfully!")
         print("\n📋 Next steps:")
         print("  1. Run: python evaluate.py")
-        print("  2. View predictions for the 5 random papers")
+        print("  2. View predictions for the 1000 random papers")
     else:
         print("\n❌ Failed to extract random papers")
         print("Please check if 'environmental_science_papers.json' exists and is valid")

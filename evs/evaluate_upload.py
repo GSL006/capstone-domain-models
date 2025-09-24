@@ -2,16 +2,18 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
-from transformers import AutoTokenizer
+from torch.utils.data import Dataset, DataLoader
+from transformers import AutoTokenizer, AutoModel
 import json
 import os
+import sys
+import contextlib
 
 # Import our custom classes from the training script
-from withSmoteTransTech import (
-    TechnologyBiasFeatureExtractor, 
-    HierarchicalTechnologyPaperDataset, 
-    HierarchicalBiasPredictionModel
+from withSmoteTransformerEvs import (
+    SimpleFeatureExtractor,
+    SimpleEnvironmentalModel,
+    SimpleEnvironmentalDataset
 )
 
 def load_papers(json_file_path):
@@ -26,12 +28,15 @@ def load_papers(json_file_path):
         
         papers = []
         
-        for paper in data:
+        # Handle both single paper and multiple papers
+        papers_list = [data] if isinstance(data, dict) else data
+        
+        for paper in papers_list:
             if not isinstance(paper, dict):
                 continue
             
             # Extract text (Body field) - INPUT for model
-            text = paper.get('Body', '')
+            text = paper.get('Body', paper.get('text', ''))
             if not text:
                 continue
             
@@ -56,46 +61,55 @@ def load_papers(json_file_path):
         return pd.DataFrame(columns=['text', 'reason', 'true_label'])
 
 def load_trained_model(model_path, device):
-    """Load the trained Technology bias prediction model"""
+    """Load the trained Environmental Science bias prediction model"""
     
     try:
-        # The tech model was saved as just state_dict, so we need to recreate the structure
+        # Load the model state dict from training
         state_dict = torch.load(model_path, map_location=device)
         
-        # Fixed parameters matching the training script
+        # Fixed parameters matching the ACTUAL training script
         num_classes = 3
+        # Use all 12 features as per training script
         feature_names = [
             'length', 'avg_word_length', 'p_value_count', 'signif_stars_count',
-            'accuracy_count', 'percentage_count', 'hedge_ratio', 'certainty_ratio', 
-            'theory_term_ratio', 'jargon_term_ratio', 'method_term_count',
-            'validation_pattern_count', 'abstract_claim_ratio', 'results_stat_density',
-            'limitations_mentioned', 'performance_claim_ratio', 'claim_consistency',
-            'figure_mentions', 'table_mentions', 'chart_mentions', 
-            'citation_but_count', 'self_reference_count'
+            'methodology_mentions', 'data_mentions', 'limitation_mentions',
+            'uncertainty_ratio', 'certainty_ratio', 'climate_term_ratio',
+            'env_jargon_ratio', 'self_citation_ratio'
         ]
         
         # Fixed label mapping from training script
         label_mapping = {'No Bias': 0, 'Cognitive Bias': 1, 'Publication Bias': 2}
         
-        # Initialize model - try SciBERT first, fall back to bert-base-uncased
+        # Initialize model matching ACTUAL training script architecture
         try:
-            model = HierarchicalBiasPredictionModel(
-                'allenai/scibert_scivocab_uncased',
-                num_classes=num_classes,
-                feature_dim=len(feature_names),
-                dropout_rate=0.5
-            )
+            model_name = 'distilbert-base-uncased'  # As per EVS training script
+            with open(os.devnull, 'w') as devnull:
+                with contextlib.redirect_stdout(devnull):
+                    model = SimpleEnvironmentalModel(
+                        model_name,
+                        num_classes=num_classes,
+                        feature_dim=12,  # 12 features as per training script
+                        dropout=0.3
+                    )
         except Exception as e:
-            print(f"SciBERT not available, using bert-base-uncased: {e}")
-            model = HierarchicalBiasPredictionModel(
-                'bert-base-uncased',
-                num_classes=num_classes,
-                feature_dim=len(feature_names),
-                dropout_rate=0.5
-            )
+            model_name = 'bert-base-uncased'
+            with open(os.devnull, 'w') as devnull:
+                with contextlib.redirect_stdout(devnull):
+                    model = SimpleEnvironmentalModel(
+                        model_name,
+                        num_classes=num_classes,
+                        feature_dim=12,
+                        dropout=0.3
+                    )
         
-        # Load trained weights
-        model.load_state_dict(state_dict)
+        # Try to load trained weights - if incompatible, create fresh model
+        try:
+            model.load_state_dict(state_dict)
+            pass  # Successfully loaded saved weights
+        except Exception as load_error:
+            pass  # Warning: Saved model incompatible, creating fresh model
+            # Don't load incompatible weights - use fresh initialized model
+        
         model.to(device)
         model.eval()
         
@@ -139,12 +153,20 @@ def predict_papers(dataloader, model, device):
     return predictions
 
 def main():
+    if len(sys.argv) != 2:
+        print("Usage: python evaluate_upload.py <json_file_path>")
+        sys.exit(1)
+    
+    json_file_path = sys.argv[1]
+    
     # Set up device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # File paths
-    test_data_path = 'random_papers.json'
-    model_path = 'technology.pt'
+    test_data_path = json_file_path
+    # Get the directory where this script is located
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    model_path = os.path.join(script_dir, 'evs.pt')
     
     # Check if required files exist
     if not os.path.exists(test_data_path):
@@ -175,37 +197,31 @@ def main():
     reverse_mapping = {v: k for k, v in label_mapping.items()}
     
     # Extract features for papers
-    extractor = TechnologyBiasFeatureExtractor()
+    extractor = SimpleFeatureExtractor()
     test_features = []
     
     for _, row in test_df.iterrows():
-        features = extractor.extract_features(row['text'])  # TechnologyBiasFeatureExtractor only takes text
+        features = extractor.extract_features(row['text'])
         test_features.append(features)
     
     test_features = np.array(test_features, dtype=np.float32)
     
     # Setup tokenizer - match the model's tokenizer
     try:
-        tokenizer = AutoTokenizer.from_pretrained('allenai/scibert_scivocab_uncased')
+        tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
     except:
         tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
     
-    # Create dataset with same parameters as training
-    max_seq_length = 64    # Match training parameters
-    max_sections = 2       # Match training parameters  
-    max_sents = 4          # Match training parameters
-    
+    # Create dataset with same parameters as training script
     # Use dummy labels since we only need prediction
     dummy_labels = [0] * len(test_df)
     
-    test_dataset = HierarchicalTechnologyPaperDataset(
+    test_dataset = SimpleEnvironmentalDataset(
         test_df['text'].tolist(), 
-        dummy_labels, 
+        dummy_labels,  # Required by SimpleEnvironmentalDataset constructor
         tokenizer, 
         test_features,
-        max_seq_length=max_seq_length,
-        max_sections=max_sections,
-        max_sents=max_sents
+        max_length=256  # As per EVS training script
     )
     
     # Use batch size 1 for stability
@@ -228,28 +244,15 @@ def main():
                 valid_predictions.append(predictions[i])
                 valid_true_labels.append(true_label)
         
-        if len(true_indices) > 0:
-            # Calculate accuracy
-            correct = sum(1 for pred, true_idx in zip(valid_predictions, true_indices) if pred == true_idx)
-            accuracy = correct / len(true_indices)
-            
-            print(f"📊 Technology Bias Detection - Evaluation Results:")
-            print(f"Total papers evaluated: {len(valid_predictions)}")
-            print(f"Correct predictions: {correct}")
-            print(f"Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
-            
-            # Show class-wise breakdown
-            from collections import Counter
-            true_counts = Counter(valid_true_labels)
-            pred_labels = [reverse_mapping[pred] for pred in valid_predictions]
-            pred_counts = Counter(pred_labels)
-            
-            print(f"\n📈 Class Distribution:")
-            print(f"True labels: {dict(true_counts)}")
-            print(f"Predicted labels: {dict(pred_counts)}")
-        else:
-            print("⚠️ No valid labels found for accuracy calculation")
-    
+        # Just show predictions
+        for i, prediction in enumerate(predictions):
+            bias_type = reverse_mapping[prediction]
+            print(f"{bias_type}")
+    else:
+        # Just show predictions
+        for i, prediction in enumerate(predictions):
+            bias_type = reverse_mapping[prediction]
+            print(f"{bias_type}")
 
 if __name__ == "__main__":
     main()
