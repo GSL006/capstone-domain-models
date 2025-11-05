@@ -15,7 +15,6 @@ seaborn>=0.11.0
 
 # System and Memory Management
 psutil>=5.9.0
-gc-utils>=1.0.0
 
 # Additional Scientific Computing
 scipy>=1.8.0
@@ -28,9 +27,8 @@ tokenizers>=0.12.0
 # Web Interface
 streamlit>=1.28.0
 
-# Optional GPU Support (uncomment if using CUDA)
-# torch-audio>=0.12.0
-# torchvision>=0.13.0
+torch-audio>=0.12.0
+torchvision>=0.13.0
 
 # Development Tools (optional)
 # jupyter>=1.0.0
