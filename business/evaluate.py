@@ -870,15 +870,21 @@ def main():
         'citation_but_count', 'self_reference_count'
     ]
     
-    # Load papers from JSON
-    papers_df = load_papers_from_json('random_papers.json')
+    # Load papers from JSON - check for random.json first, then random_papers.json
+    data_file = 'random.json'
+    if not os.path.exists(data_file):
+        data_file = 'random_papers.json'
+    papers_df = load_papers_from_json(data_file)
     
     if len(papers_df) == 0:
         print("No papers found in the JSON file. Exiting.")
         return
     
-    # Use all papers from random_papers.json (already sampled by split_dataset.py)
-    sampled_papers = papers_df
+    # Use all papers (limit to 1000 if more)
+    if len(papers_df) > 1000:
+        sampled_papers = papers_df.sample(n=1000, random_state=42).reset_index(drop=True)
+    else:
+        sampled_papers = papers_df
     
     # Evaluate the model
     model_path = 'business.pt'

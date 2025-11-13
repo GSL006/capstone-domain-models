@@ -124,8 +124,10 @@ def main():
     # Set up device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # File paths
-    test_data_path = 'random_papers.json'
+    # File paths - check for random.json first, then random_papers.json
+    test_data_path = 'random.json'
+    if not os.path.exists(test_data_path):
+        test_data_path = 'random_papers.json'
     model_path = 'comp_sci.pt'
     
     # Check if required files exist
@@ -212,7 +214,7 @@ def main():
             correct = sum(1 for pred, true_idx in zip(valid_predictions, true_indices) if pred == true_idx)
             accuracy = correct / len(true_indices)
             
-            print(f"📊 Evaluation Results:")
+            print(f"Evaluation Results:")
             print(f"Total papers evaluated: {len(valid_predictions)}")
             print(f"Correct predictions: {correct}")
             print(f"Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
@@ -223,11 +225,11 @@ def main():
             pred_labels = [reverse_mapping[pred] for pred in valid_predictions]
             pred_counts = Counter(pred_labels)
             
-            print(f"\n📈 Class Distribution:")
+            print(f"\nClass Distribution:")
             print(f"True labels: {dict(true_counts)}")
             print(f"Predicted labels: {dict(pred_counts)}")
         else:
-            print("⚠️ No valid labels found for accuracy calculation")
+            print("[WARNING] No valid labels found for accuracy calculation")
     
 
 if __name__ == "__main__":

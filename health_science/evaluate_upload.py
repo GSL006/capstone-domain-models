@@ -143,7 +143,7 @@ def main():
     test_data_path = json_file_path
     # Get the directory where this script is located
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    model_path = os.path.join(script_dir, 'best_hierarchical_health_science_model.pt')
+    model_path = os.path.join(script_dir, 'health.pt')
     
     # Check if required files exist
     if not os.path.exists(test_data_path):

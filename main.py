@@ -15,11 +15,15 @@ def extract_domain_from_subject(subject):
     
     # Domain keywords mapping
     domain_keywords = {
-        'business': ['business'],
-        'comp': ['computer science', 'computer'],
-        'econ': ['economics'],
-        'evs': ['environmental'],
-        'tech': ['technology', 'engineering']
+        'business': ['business', 'management', 'entrepreneurship'],
+        'comp': ['computer science', 'computer', 'computational'],
+        'econ': ['economics', 'economic'],
+        'evs': ['environmental', 'environment', 'ecology', 'sustainability'],
+        'tech': ['technology', 'engineering', 'technical'],
+        'health_science': ['health', 'medical', 'medicine', 'healthcare', 'biomedical'],
+        'humanities': ['humanities', 'philosophy', 'literature', 'history', 'arts'],
+        'physical_science': ['physics', 'chemistry', 'physical science', 'astronomy'],
+        'social_science': ['social science', 'sociology', 'psychology', 'anthropology', 'political science', 'education']
     }
     
     # Count occurrences and track first occurrence position for each domain
@@ -55,6 +59,24 @@ def extract_domain_from_subject(subject):
     
     return sorted_domains[0][0]
 
+def get_venv_python():
+    """Get the path to the venv Python interpreter"""
+    # Get the directory where main.py is located
+    base_dir = Path(__file__).parent.absolute()
+    
+    # Check for venv Python (Windows)
+    venv_python_win = base_dir / 'venv' / 'Scripts' / 'python.exe'
+    if venv_python_win.exists():
+        return str(venv_python_win)
+    
+    # Check for venv Python (Linux/Mac)
+    venv_python_unix = base_dir / 'venv' / 'bin' / 'python'
+    if venv_python_unix.exists():
+        return str(venv_python_unix)
+    
+    # Fallback to system Python if venv not found
+    return 'python'
+
 def run_evaluation(domain, json_file_path):
     """Run the appropriate evaluation script for the domain"""
     domain_scripts = {
@@ -62,7 +84,11 @@ def run_evaluation(domain, json_file_path):
         'econ': 'econ/evaluate_upload.py', 
         'tech': 'tech/evaluate_upload.py',
         'business': 'business/evaluate_upload.py',
-        'evs': 'evs/evaluate_upload.py'
+        'evs': 'evs/evaluate_upload.py',
+        'health_science': 'health_science/evaluate_upload.py',
+        'humanities': 'humanities/evaluate_upload.py',
+        'physical_science': 'physical_science/evaluate_upload.py',
+        'social_science': 'social_science/evaluate_upload.py'
     }
     
     if domain not in domain_scripts:
@@ -74,10 +100,13 @@ def run_evaluation(domain, json_file_path):
     if not os.path.exists(script_path):
         return f"❌ Evaluation script not found: {script_path}"
     
+    # Get venv Python interpreter
+    python_interpreter = get_venv_python()
+    
     try:
-        # Run the evaluation script
+        # Run the evaluation script using venv Python
         result = subprocess.run(
-            ['python', script_path, json_file_path],
+            [python_interpreter, script_path, json_file_path],
             capture_output=True,
             text=True,
             cwd=os.getcwd()
@@ -134,8 +163,13 @@ def main():
         
         **Supported Domains:**
         - 💻 Computer Science & Technology
-        - 💰 Economics & Business
+        - 💰 Economics 
+        - 💼 Business
         - 🌱 Environmental Science
+        - 🏥 Health Science
+        - 📚 Humanities
+        - 🔬 Physical Science
+        - 👥 Social Science
         """)
         
         st.header("📋 JSON Format")
@@ -231,13 +265,24 @@ def main():
                         st.markdown("### 📋 Analysis Results:")
                         
                         # Parse results to make them more readable
-                        if "📊" in result or "Accuracy:" in result:
-                            st.success("✅ Analysis completed successfully!")
-                            st.code(result, language="text")
-                        elif "❌" in result:
+                        if "❌" in result or "Error" in result:
                             st.error(result)
                         else:
-                            st.info(result)
+                            # evaluate_upload.py outputs bias types (one per line)
+                            bias_types = [line.strip() for line in result.strip().split('\n') if line.strip()]
+                            if bias_types:
+                                st.success("✅ Analysis completed successfully!")
+                                # Display each prediction
+                                for idx, bias_type in enumerate(bias_types):
+                                    # Color code based on bias type
+                                    if bias_type == "No Bias":
+                                        st.success(f"**Paper {idx+1}:** {bias_type}")
+                                    elif bias_type in ["Cognitive Bias", "Publication Bias"]:
+                                        st.warning(f"**Paper {idx+1}:** {bias_type}")
+                                    else:
+                                        st.info(f"**Paper {idx+1}:** {bias_type}")
+                            else:
+                                st.info(result)
                             
                     finally:
                         # Clean up temporary file
@@ -246,19 +291,23 @@ def main():
                         except:
                             pass
                 else:
-                    st.warning(f"⚠️ Could not determine domain for subject: '{subject}'. Supported domains: Computer Science, Technology, Economics, Business, Environmental Science")
+                    st.warning(f"⚠️ Could not determine domain for subject: '{subject}'. Please select domain manually.")
                     
                     # Show manual domain selection
                     manual_domain = st.selectbox(
                         f"Select domain manually for Paper {i+1}:",
-                        ['', 'comp', 'tech', 'econ', 'business', 'evs'],
+                        ['', 'comp', 'tech', 'econ', 'business', 'evs', 'health_science', 'humanities', 'physical_science', 'social_science'],
                         format_func=lambda x: {
                             '': 'Select domain...',
                             'comp': '💻 Computer Science',
                             'tech': '💻 Technology', 
                             'econ': '💰 Economics',
                             'business': '💰 Business',
-                            'evs': '🌱 Environmental Science'
+                            'evs': '🌱 Environmental Science',
+                            'health_science': '🏥 Health Science',
+                            'humanities': '📚 Humanities',
+                            'physical_science': '🔬 Physical Science',
+                            'social_science': '👥 Social Science'
                         }.get(x, x),
                         key=f"domain_select_{i}"
                     )
@@ -278,13 +327,24 @@ def main():
                             progress_bar.progress(100)
                             
                             st.markdown("### 📋 Analysis Results:")
-                            if "📊" in result or "Accuracy:" in result:
-                                st.success("✅ Analysis completed successfully!")
-                                st.code(result, language="text")
-                            elif "❌" in result:
+                            if "❌" in result or "Error" in result:
                                 st.error(result)
                             else:
-                                st.info(result)
+                                # evaluate_upload.py outputs bias types (one per line)
+                                bias_types = [line.strip() for line in result.strip().split('\n') if line.strip()]
+                                if bias_types:
+                                    st.success("✅ Analysis completed successfully!")
+                                    # Display each prediction
+                                    for idx, bias_type in enumerate(bias_types):
+                                        # Color code based on bias type
+                                        if bias_type == "No Bias":
+                                            st.success(f"**Paper {idx+1}:** {bias_type}")
+                                        elif bias_type in ["Cognitive Bias", "Publication Bias"]:
+                                            st.warning(f"**Paper {idx+1}:** {bias_type}")
+                                        else:
+                                            st.info(f"**Paper {idx+1}:** {bias_type}")
+                                else:
+                                    st.info(result)
                                 
                         finally:
                             try:

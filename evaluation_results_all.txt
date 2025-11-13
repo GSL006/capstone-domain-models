@@ -1,0 +1,415 @@
+================================================================================
+COMPREHENSIVE MODEL EVALUATION RESULTS
+================================================================================
+Generated: 2025-11-13 20:34:06
+Total Domains: 9
+Successful: 8
+Failed: 1
+================================================================================
+
+SUMMARY
+--------------------------------------------------------------------------------
+BUSINESS             ✅ SUCCESS
+COMP                 ✅ SUCCESS
+ECON                 ✅ SUCCESS
+EVS                  ✅ SUCCESS
+TECH                 ✅ SUCCESS
+HEALTH_SCIENCE       ✅ SUCCESS
+HUMANITIES           ✅ SUCCESS
+PHYSICAL_SCIENCE     ❌ FAILED
+  Error: Evaluation timed out after 10 minutes
+SOCIAL_SCIENCE       ✅ SUCCESS
+
+================================================================================
+
+
+================================================================================
+DOMAIN 1/9: BUSINESS - ✅ SUCCESS
+================================================================================
+Path: business
+Return Code: 0
+
+Key Metrics:
+--------------------------------------------------------------------------------
+  accuracy_value: 0.604
+  accuracy_line: Accuracy: 0.6040
+  has_evaluation_results: True
+
+--------------------------------------------------------------------------------
+STDOUT:
+--------------------------------------------------------------------------------
+Using device: cuda
+Loading papers from random.json...
+Successfully loaded 1000 business papers from random.json
+Extracting business-specific handcrafted features...
+Normalizing features using StandardScaler...
+Setting up tokenizer...
+Loading tokenizer: allenai/scibert_scivocab_uncased
+Creating evaluation dataset...
+Loading model from business.pt...
+Model loaded successfully!
+Loading BERT with reduced complexity for CPU processing
+Running evaluation...
+
+Evaluation Results:
+==================================================
+Total papers evaluated: 1000
+Overall Accuracy: 0.6040 (60.40%)
+
+Class Distribution in Test Set:
+  No Bias: 395 papers
+  Cognitive Bias: 143 papers
+  Selection/Publication Bias: 462 papers
+
+Predicted Class Distribution:
+  No Bias: 189 papers
+  Cognitive Bias: 80 papers
+  Selection/Publication Bias: 731 papers
+
+Detailed Classification Report:
+==================================================
+                            precision    recall  f1-score   support
+
+                   No Bias     0.7725    0.3696    0.5000       395
+            Cognitive Bias     0.4375    0.2448    0.3139       143
+Selection/Publication Bias     0.5787    0.9156    0.7091       462
+
+                  accuracy                         0.6040      1000
+                 macro avg     0.5962    0.5100    0.5077      1000
+              weighted avg     0.6350    0.6040    0.5700      1000
+
+
+Confusion Matrix:
+==================================================
+Actual \ Predicted:	No Bias	Cognitive 	Selection/
+No Bias        	146	26	223
+Cognitive Bias 	23	35	85
+Selection/Publi	20	19	423
+
+Final Accuracy on 1000 papers: 0.6040 (60.40%)
+
+--------------------------------------------------------------------------------
+STDERR:
+--------------------------------------------------------------------------------
+[nltk_data] Downloading package punkt_tab to
+[nltk_data]     C:\Users\gagan\AppData\Roaming\nltk_data...
+[nltk_data]   Package punkt_tab is already up-to-date!
+
+================================================================================
+
+================================================================================
+DOMAIN 2/9: COMP - ✅ SUCCESS
+================================================================================
+Path: comp
+Return Code: 0
+
+Key Metrics:
+--------------------------------------------------------------------------------
+  accuracy_value: 0.79
+  accuracy_line: Accuracy: 0.7900
+  has_evaluation_results: True
+
+--------------------------------------------------------------------------------
+STDOUT:
+--------------------------------------------------------------------------------
+Loading BERT with proven architecture for CS processing
+Evaluation Results:
+Total papers evaluated: 1000
+Correct predictions: 790
+Accuracy: 0.7900 (79.00%)
+
+Class Distribution:
+True labels: {'Publication Bias': 863, 'No Bias': 81, 'Cognitive Bias': 56}
+Predicted labels: {'Publication Bias': 819, 'No Bias': 173, 'Cognitive Bias': 8}
+
+================================================================================
+
+================================================================================
+DOMAIN 3/9: ECON - ✅ SUCCESS
+================================================================================
+Path: econ
+Return Code: 0
+
+Key Metrics:
+--------------------------------------------------------------------------------
+  accuracy_value: 0.651
+  accuracy_line: Accuracy: 0.6510
+  has_evaluation_results: True
+
+--------------------------------------------------------------------------------
+STDOUT:
+--------------------------------------------------------------------------------
+Using device: cuda
+Loading papers from random.json...
+Successfully loaded 1000 economics papers from random.json
+Class distribution:
+  No Bias: 487 papers
+  Cognitive Bias: 99 papers
+  Selection/Publication Bias: 414 papers
+Extracting economics-specific handcrafted features...
+Using raw features (same as training - no normalization applied)
+Setting up tokenizer...
+Loading tokenizer: allenai/scibert_scivocab_uncased
+Creating evaluation dataset...
+Loading model from economics.pt...
+Model loaded successfully!
+Loading BERT (standard complexity)
+Running evaluation...
+
+Evaluation Results:
+==================================================
+Total papers evaluated: 1000
+Overall Accuracy: 0.6510 (65.10%)
+
+Class Distribution in Test Set:
+  No Bias: 487 papers
+  Cognitive Bias: 99 papers
+  Selection/Publication Bias: 414 papers
+
+Predicted Class Distribution:
+  No Bias: 342 papers
+  Cognitive Bias: 223 papers
+  Selection/Publication Bias: 435 papers
+
+Detailed Classification Report:
+==================================================
+                            precision    recall  f1-score   support
+
+                   No Bias     0.7924    0.5565    0.6538       487
+            Cognitive Bias     0.1570    0.3535    0.2174        99
+Selection/Publication Bias     0.7931    0.8333    0.8127       414
+
+                  accuracy                         0.6510      1000
+                 macro avg     0.5808    0.5811    0.5613      1000
+              weighted avg     0.7298    0.6510    0.6764      1000
+
+
+Confusion Matrix:
+==================================================
+Actual \ Predicted:        No Bias Cognitive BiasSelection/Publication Bias
+        No Bias            271            154             62
+ Cognitive Bias             36             35             28
+Selection/Publication Bias             35             34            345
+
+Final Accuracy on 1000 papers: 0.6510 (65.10%)
+
+--------------------------------------------------------------------------------
+STDERR:
+--------------------------------------------------------------------------------
+[nltk_data] Downloading package punkt_tab to
+[nltk_data]     C:\Users\gagan\AppData\Roaming\nltk_data...
+[nltk_data]   Package punkt_tab is already up-to-date!
+
+================================================================================
+
+================================================================================
+DOMAIN 4/9: EVS - ✅ SUCCESS
+================================================================================
+Path: evs
+Return Code: 0
+
+Key Metrics:
+--------------------------------------------------------------------------------
+  accuracy_value: 0.6195
+  accuracy_line: Accuracy: 0.6195
+  has_evaluation_results: True
+
+--------------------------------------------------------------------------------
+STDOUT:
+--------------------------------------------------------------------------------
+Warning: Saved model incompatible (Error(s) in loading state_dict for SimpleEnvironmentalModel:
+	Missing key(s) in state_dict: "bert.transformer.layer.0.attention.q_lin.weight", "bert.transformer.layer.0.attention.q_lin.bias", "bert.transformer.layer.0.attention.k_lin.weight", "bert.transformer.layer.0.attention.k_lin.bias", "bert.transformer.layer.0.attention.v_lin.weight", "bert.transformer.layer.0.attention.v_lin.bias", "bert.transformer.layer.0.attention.out_lin.weight", "bert.transformer.layer.0.attention.out_lin.bias", "bert.transformer.layer.0.sa_layer_norm.weight", "bert.transformer.layer.0.sa_layer_norm.bias", "bert.transformer.layer.0.ffn.lin1.weight", "bert.transformer.layer.0.ffn.lin1.bias", "bert.transformer.layer.0.ffn.lin2.weight", "bert.transformer.layer.0.ffn.lin2.bias", "bert.transformer.layer.0.output_layer_norm.weight", "bert.transformer.layer.0.output_layer_norm.bias", "bert.transformer.layer.1.attention.q_lin.weight", "bert.transformer.layer.1.attention.q_lin.bias", "bert.transformer.layer.1.attention.k_lin.weight", "bert.transformer.layer.1.attention.k_lin.bias", "bert.transformer.layer.1.attention.v_lin.weight", "bert.transformer.layer.1.attention.v_lin.bias", "bert.transformer.layer.1.attention.out_lin.weight", "bert.transformer.layer.1.attention.out_lin.bias", "bert.transformer.layer.1.sa_layer_norm.weight", "bert.transformer.layer.1.sa_layer_norm.bias", "bert.transformer.layer.1.ffn.lin1.weight", "bert.transformer.layer.1.ffn.lin1.bias", "bert.transformer.layer.1.ffn.lin2.weight", "bert.transformer.layer.1.ffn.lin2.bias", "bert.transformer.layer.1.output_layer_norm.weight", "bert.transformer.layer.1.output_layer_norm.bias", "bert.transformer.layer.2.attention.q_lin.weight", "bert.transformer.layer.2.attention.q_lin.bias", "bert.transformer.layer.2.attention.k_lin.weight", "bert.transformer.layer.2.attention.k_lin.bias", "bert.transformer.layer.2.attention.v_lin.weight", "bert.transformer.layer.2.attention.v_lin.bias", "bert.transformer.layer.2.attention.out_lin.weight", "bert.transformer.layer.2.attention.out_lin.bias", "bert.transformer.layer.2.sa_layer_norm.weight", "bert.transformer.layer.2.sa_layer_norm.bias", "bert.transformer.layer.2.ffn.lin1.weight", "bert.transformer.layer.2.ffn.lin1.bias", "bert.transformer.layer.2.ffn.lin2.weight", "bert.transformer.layer.2.ffn.lin2.bias", "bert.transformer.layer.2.output_layer_norm.weight", "bert.transformer.layer.2.output_layer_norm.bias", "bert.transformer.layer.3.attention.q_lin.weight", "bert.transformer.layer.3.attention.q_lin.bias", "bert.transformer.layer.3.attention.k_lin.weight", "bert.transformer.layer.3.attention.k_lin.bias", "bert.transformer.layer.3.attention.v_lin.weight", "bert.transformer.layer.3.attention.v_lin.bias", "bert.transformer.layer.3.attention.out_lin.weight", "bert.transformer.layer.3.attention.out_lin.bias", "bert.transformer.layer.3.sa_layer_norm.weight", "bert.transformer.layer.3.sa_layer_norm.bias", "bert.transformer.layer.3.ffn.lin1.weight", "bert.transformer.layer.3.ffn.lin1.bias", "bert.transformer.layer.3.ffn.lin2.weight", "bert.transformer.layer.3.ffn.lin2.bias", "bert.transformer.layer.3.output_layer_norm.weight", "bert.transformer.layer.3.output_layer_norm.bias", "bert.transformer.layer.4.attention.q_lin.weight", "bert.transformer.layer.4.attention.q_lin.bias", "bert.transformer.layer.4.attention.k_lin.weight", "bert.transformer.layer.4.attention.k_lin.bias", "bert.transformer.layer.4.attention.v_lin.weight", "bert.transformer.layer.4.attention.v_lin.bias", "bert.transformer.layer.4.attention.out_lin.weight", "bert.transformer.layer.4.attention.out_lin.bias", "bert.transformer.layer.4.sa_layer_norm.weight", "bert.transformer.layer.4.sa_layer_norm.bias", "bert.transformer.layer.4.ffn.lin1.weight", "bert.transformer.layer.4.ffn.lin1.bias", "bert.transformer.layer.4.ffn.lin2.weight", "bert.transformer.layer.4.ffn.lin2.bias", "bert.transformer.layer.4.output_layer_norm.weight", "bert.transformer.layer.4.output_layer_norm.bias", "bert.transformer.layer.5.attention.q_lin.weight", "bert.transformer.layer.5.attention.q_lin.bias", "bert.transformer.layer.5.attention.k_lin.weight", "bert.transformer.layer.5.attention.k_lin.bias", "bert.transformer.layer.5.attention.v_lin.weight", "bert.transformer.layer.5.attention.v_lin.bias", "bert.transformer.layer.5.attention.out_lin.weight", "bert.transformer.layer.5.attention.out_lin.bias", "bert.transformer.layer.5.sa_layer_norm.weight", "bert.transformer.layer.5.sa_layer_norm.bias", "bert.transformer.layer.5.ffn.lin1.weight", "bert.transformer.layer.5.ffn.lin1.bias", "bert.transformer.layer.5.ffn.lin2.weight", "bert.transformer.layer.5.ffn.lin2.bias", "bert.transformer.layer.5.output_layer_norm.weight", "bert.transformer.layer.5.output_layer_norm.bias", "feature_processor.0.weight", "feature_processor.0.bias", "feature_processor.3.weight", "feature_processor.3.bias", "classifier.0.weight", "classifier.0.bias", "classifier.3.weight", "classifier.3.bias", "classifier.6.weight", "classifier.6.bias". 
+	Unexpected key(s) in state_dict: "hierarchical_attention.word_attention.in_proj_weight", "hierarchical_attention.word_attention.in_proj_bias", "hierarchical_attention.word_attention.out_proj.weight", "hierarchical_attention.word_attention.out_proj.bias", "hierarchical_attention.word_layer_norm.weight", "hierarchical_attention.word_layer_norm.bias", "hierarchical_attention.sentence_attention.in_proj_weight", "hierarchical_attention.sentence_attention.in_proj_bias", "hierarchical_attention.sentence_attention.out_proj.weight", "hierarchical_attention.sentence_attention.out_proj.bias", "hierarchical_attention.sentence_layer_norm.weight", "hierarchical_attention.sentence_layer_norm.bias", "hierarchical_attention.section_attention.in_proj_weight", "hierarchical_attention.section_attention.in_proj_bias", "hierarchical_attention.section_attention.out_proj.weight", "hierarchical_attention.section_attention.out_proj.bias", "hierarchical_attention.section_layer_norm.weight", "hierarchical_attention.section_layer_norm.bias", "feature_fusion.bert_projection.weight", "feature_fusion.bert_projection.bias", "feature_fusion.handcrafted_projection.weight", "feature_fusion.handcrafted_projection.bias", "feature_fusion.attention.in_proj_weight", "feature_fusion.attention.in_proj_bias", "feature_fusion.attention.out_proj.weight", "feature_fusion.attention.out_proj.bias", "feature_fusion.gate.0.weight", "feature_fusion.gate.0.bias", "feature_fusion.layer_norm.weight", "feature_fusion.layer_norm.bias", "fc1.weight", "fc1.bias", "fc2.weight", "fc2.bias", "layer_norm.weight", "layer_norm.bias", "bert.encoder.layer.0.attention.self.query.weight", "bert.encoder.layer.0.attention.self.query.bias", "bert.encoder.layer.0.attention.self.key.weight", "bert.encoder.layer.0.attention.self.key.bias", "bert.encoder.layer.0.attention.self.value.weight", "bert.encoder.layer.0.attention.self.value.bias", "bert.encoder.layer.0.attention.output.dense.weight", "bert.encoder.layer.0.attention.output.dense.bias", "bert.encoder.layer.0.attention.output.LayerNorm.weight", "bert.encoder.layer.0.attention.output.LayerNorm.bias", "bert.encoder.layer.0.intermediate.dense.weight", "bert.encoder.layer.0.intermediate.dense.bias", "bert.encoder.layer.0.output.dense.weight", "bert.encoder.layer.0.output.dense.bias", "bert.encoder.layer.0.output.LayerNorm.weight", "bert.encoder.layer.0.output.LayerNorm.bias", "bert.encoder.layer.1.attention.self.query.weight", "bert.encoder.layer.1.attention.self.query.bias", "bert.encoder.layer.1.attention.self.key.weight", "bert.encoder.layer.1.attention.self.key.bias", "bert.encoder.layer.1.attention.self.value.weight", "bert.encoder.layer.1.attention.self.value.bias", "bert.encoder.layer.1.attention.output.dense.weight", "bert.encoder.layer.1.attention.output.dense.bias", "bert.encoder.layer.1.attention.output.LayerNorm.weight", "bert.encoder.layer.1.attention.output.LayerNorm.bias", "bert.encoder.layer.1.intermediate.dense.weight", "bert.encoder.layer.1.intermediate.dense.bias", "bert.encoder.layer.1.output.dense.weight", "bert.encoder.layer.1.output.dense.bias", "bert.encoder.layer.1.output.LayerNorm.weight", "bert.encoder.layer.1.output.LayerNorm.bias", "bert.encoder.layer.2.attention.self.query.weight", "bert.encoder.layer.2.attention.self.query.bias", "bert.encoder.layer.2.attention.self.key.weight", "bert.encoder.layer.2.attention.self.key.bias", "bert.encoder.layer.2.attention.self.value.weight", "bert.encoder.layer.2.attention.self.value.bias", "bert.encoder.layer.2.attention.output.dense.weight", "bert.encoder.layer.2.attention.output.dense.bias", "bert.encoder.layer.2.attention.output.LayerNorm.weight", "bert.encoder.layer.2.attention.output.LayerNorm.bias", "bert.encoder.layer.2.intermediate.dense.weight", "bert.encoder.layer.2.intermediate.dense.bias", "bert.encoder.layer.2.output.dense.weight", "bert.encoder.layer.2.output.dense.bias", "bert.encoder.layer.2.output.LayerNorm.weight", "bert.encoder.layer.2.output.LayerNorm.bias", "bert.encoder.layer.3.attention.self.query.weight", "bert.encoder.layer.3.attention.self.query.bias", "bert.encoder.layer.3.attention.self.key.weight", "bert.encoder.layer.3.attention.self.key.bias", "bert.encoder.layer.3.attention.self.value.weight", "bert.encoder.layer.3.attention.self.value.bias", "bert.encoder.layer.3.attention.output.dense.weight", "bert.encoder.layer.3.attention.output.dense.bias", "bert.encoder.layer.3.attention.output.LayerNorm.weight", "bert.encoder.layer.3.attention.output.LayerNorm.bias", "bert.encoder.layer.3.intermediate.dense.weight", "bert.encoder.layer.3.intermediate.dense.bias", "bert.encoder.layer.3.output.dense.weight", "bert.encoder.layer.3.output.dense.bias", "bert.encoder.layer.3.output.LayerNorm.weight", "bert.encoder.layer.3.output.LayerNorm.bias", "bert.encoder.layer.4.attention.self.query.weight", "bert.encoder.layer.4.attention.self.query.bias", "bert.encoder.layer.4.attention.self.key.weight", "bert.encoder.layer.4.attention.self.key.bias", "bert.encoder.layer.4.attention.self.value.weight", "bert.encoder.layer.4.attention.self.value.bias", "bert.encoder.layer.4.attention.output.dense.weight", "bert.encoder.layer.4.attention.output.dense.bias", "bert.encoder.layer.4.attention.output.LayerNorm.weight", "bert.encoder.layer.4.attention.output.LayerNorm.bias", "bert.encoder.layer.4.intermediate.dense.weight", "bert.encoder.layer.4.intermediate.dense.bias", "bert.encoder.layer.4.output.dense.weight", "bert.encoder.layer.4.output.dense.bias", "bert.encoder.layer.4.output.LayerNorm.weight", "bert.encoder.layer.4.output.LayerNorm.bias", "bert.encoder.layer.5.attention.self.query.weight", "bert.encoder.layer.5.attention.self.query.bias", "bert.encoder.layer.5.attention.self.key.weight", "bert.encoder.layer.5.attention.self.key.bias", "bert.encoder.layer.5.attention.self.value.weight", "bert.encoder.layer.5.attention.self.value.bias", "bert.encoder.layer.5.attention.output.dense.weight", "bert.encoder.layer.5.attention.output.dense.bias", "bert.encoder.layer.5.attention.output.LayerNorm.weight", "bert.encoder.layer.5.attention.output.LayerNorm.bias", "bert.encoder.layer.5.intermediate.dense.weight", "bert.encoder.layer.5.intermediate.dense.bias", "bert.encoder.layer.5.output.dense.weight", "bert.encoder.layer.5.output.dense.bias", "bert.encoder.layer.5.output.LayerNorm.weight", "bert.encoder.layer.5.output.LayerNorm.bias", "bert.encoder.layer.6.attention.self.query.weight", "bert.encoder.layer.6.attention.self.query.bias", "bert.encoder.layer.6.attention.self.key.weight", "bert.encoder.layer.6.attention.self.key.bias", "bert.encoder.layer.6.attention.self.value.weight", "bert.encoder.layer.6.attention.self.value.bias", "bert.encoder.layer.6.attention.output.dense.weight", "bert.encoder.layer.6.attention.output.dense.bias", "bert.encoder.layer.6.attention.output.LayerNorm.weight", "bert.encoder.layer.6.attention.output.LayerNorm.bias", "bert.encoder.layer.6.intermediate.dense.weight", "bert.encoder.layer.6.intermediate.dense.bias", "bert.encoder.layer.6.output.dense.weight", "bert.encoder.layer.6.output.dense.bias", "bert.encoder.layer.6.output.LayerNorm.weight", "bert.encoder.layer.6.output.LayerNorm.bias", "bert.encoder.layer.7.attention.self.query.weight", "bert.encoder.layer.7.attention.self.query.bias", "bert.encoder.layer.7.attention.self.key.weight", "bert.encoder.layer.7.attention.self.key.bias", "bert.encoder.layer.7.attention.self.value.weight", "bert.encoder.layer.7.attention.self.value.bias", "bert.encoder.layer.7.attention.output.dense.weight", "bert.encoder.layer.7.attention.output.dense.bias", "bert.encoder.layer.7.attention.output.LayerNorm.weight", "bert.encoder.layer.7.attention.output.LayerNorm.bias", "bert.encoder.layer.7.intermediate.dense.weight", "bert.encoder.layer.7.intermediate.dense.bias", "bert.encoder.layer.7.output.dense.weight", "bert.encoder.layer.7.output.dense.bias", "bert.encoder.layer.7.output.LayerNorm.weight", "bert.encoder.layer.7.output.LayerNorm.bias", "bert.encoder.layer.8.attention.self.query.weight", "bert.encoder.layer.8.attention.self.query.bias", "bert.encoder.layer.8.attention.self.key.weight", "bert.encoder.layer.8.attention.self.key.bias", "bert.encoder.layer.8.attention.self.value.weight", "bert.encoder.layer.8.attention.self.value.bias", "bert.encoder.layer.8.attention.output.dense.weight", "bert.encoder.layer.8.attention.output.dense.bias", "bert.encoder.layer.8.attention.output.LayerNorm.weight", "bert.encoder.layer.8.attention.output.LayerNorm.bias", "bert.encoder.layer.8.intermediate.dense.weight", "bert.encoder.layer.8.intermediate.dense.bias", "bert.encoder.layer.8.output.dense.weight", "bert.encoder.layer.8.output.dense.bias", "bert.encoder.layer.8.output.LayerNorm.weight", "bert.encoder.layer.8.output.LayerNorm.bias", "bert.encoder.layer.9.attention.self.query.weight", "bert.encoder.layer.9.attention.self.query.bias", "bert.encoder.layer.9.attention.self.key.weight", "bert.encoder.layer.9.attention.self.key.bias", "bert.encoder.layer.9.attention.self.value.weight", "bert.encoder.layer.9.attention.self.value.bias", "bert.encoder.layer.9.attention.output.dense.weight", "bert.encoder.layer.9.attention.output.dense.bias", "bert.encoder.layer.9.attention.output.LayerNorm.weight", "bert.encoder.layer.9.attention.output.LayerNorm.bias", "bert.encoder.layer.9.intermediate.dense.weight", "bert.encoder.layer.9.intermediate.dense.bias", "bert.encoder.layer.9.output.dense.weight", "bert.encoder.layer.9.output.dense.bias", "bert.encoder.layer.9.output.LayerNorm.weight", "bert.encoder.layer.9.output.LayerNorm.bias", "bert.encoder.layer.10.attention.self.query.weight", "bert.encoder.layer.10.attention.self.query.bias", "bert.encoder.layer.10.attention.self.key.weight", "bert.encoder.layer.10.attention.self.key.bias", "bert.encoder.layer.10.attention.self.value.weight", "bert.encoder.layer.10.attention.self.value.bias", "bert.encoder.layer.10.attention.output.dense.weight", "bert.encoder.layer.10.attention.output.dense.bias", "bert.encoder.layer.10.attention.output.LayerNorm.weight", "bert.encoder.layer.10.attention.output.LayerNorm.bias", "bert.encoder.layer.10.intermediate.dense.weight", "bert.encoder.layer.10.intermediate.dense.bias", "bert.encoder.layer.10.output.dense.weight", "bert.encoder.layer.10.output.dense.bias", "bert.encoder.layer.10.output.LayerNorm.weight", "bert.encoder.layer.10.output.LayerNorm.bias", "bert.encoder.layer.11.attention.self.query.weight", "bert.encoder.layer.11.attention.self.query.bias", "bert.encoder.layer.11.attention.self.key.weight", "bert.encoder.layer.11.attention.self.key.bias", "bert.encoder.layer.11.attention.self.value.weight", "bert.encoder.layer.11.attention.self.value.bias", "bert.encoder.layer.11.attention.output.dense.weight", "bert.encoder.layer.11.attention.output.dense.bias", "bert.encoder.layer.11.attention.output.LayerNorm.weight", "bert.encoder.layer.11.attention.output.LayerNorm.bias", "bert.encoder.layer.11.intermediate.dense.weight", "bert.encoder.layer.11.intermediate.dense.bias", "bert.encoder.layer.11.output.dense.weight", "bert.encoder.layer.11.output.dense.bias", "bert.encoder.layer.11.output.LayerNorm.weight", "bert.encoder.layer.11.output.LayerNorm.bias", "bert.pooler.dense.weight", "bert.pooler.dense.bias", "bert.embeddings.token_type_embeddings.weight". 
+	size mismatch for bert.embeddings.word_embeddings.weight: copying a param with shape torch.Size([31090, 768]) from checkpoint, the shape in current model is torch.Size([30522, 768]).)
+Creating fresh model with current architecture
+Environmental Science Bias Detection - Evaluation Results:
+Total papers evaluated: 799
+Correct predictions: 495
+Accuracy: 0.6195 (61.95%)
+
+Class Distribution:
+True labels: {'Publication Bias': 495, 'Cognitive Bias': 206, 'No Bias': 98}
+Predicted labels: {'Publication Bias': 799}
+
+================================================================================
+
+================================================================================
+DOMAIN 5/9: TECH - ✅ SUCCESS
+================================================================================
+Path: tech
+Return Code: 0
+
+Key Metrics:
+--------------------------------------------------------------------------------
+  accuracy_value: 0.752
+  accuracy_line: Accuracy: 0.7520
+  has_evaluation_results: True
+
+--------------------------------------------------------------------------------
+STDOUT:
+--------------------------------------------------------------------------------
+Loading BERT (reduced complexity)
+Technology Bias Detection - Evaluation Results:
+Total papers evaluated: 1000
+Correct predictions: 752
+Accuracy: 0.7520 (75.20%)
+
+Class Distribution:
+True labels: {'Cognitive Bias': 99, 'Publication Bias': 790, 'No Bias': 111}
+Predicted labels: {'No Bias': 208, 'Publication Bias': 696, 'Cognitive Bias': 96}
+
+--------------------------------------------------------------------------------
+STDERR:
+--------------------------------------------------------------------------------
+[nltk_data] Downloading package punkt_tab to
+[nltk_data]     C:\Users\gagan\AppData\Roaming\nltk_data...
+[nltk_data]   Package punkt_tab is already up-to-date!
+
+================================================================================
+
+================================================================================
+DOMAIN 6/9: HEALTH_SCIENCE - ✅ SUCCESS
+================================================================================
+Path: health_science
+Return Code: 0
+
+Key Metrics:
+--------------------------------------------------------------------------------
+  accuracy_value: 0.853
+  accuracy_line: Accuracy: 0.8530
+  has_evaluation_results: True
+
+--------------------------------------------------------------------------------
+STDOUT:
+--------------------------------------------------------------------------------
+Evaluation Results:
+Total papers evaluated: 1000
+Correct predictions: 853
+Accuracy: 0.8530 (85.30%)
+
+Class Distribution:
+True labels: {'Cognitive Bias': 305, 'Publication Bias': 559, 'No Bias': 136}
+Predicted labels: {'Cognitive Bias': 312, 'Publication Bias': 560, 'No Bias': 128}
+
+--------------------------------------------------------------------------------
+STDERR:
+--------------------------------------------------------------------------------
+[nltk_data] Downloading package punkt_tab to
+[nltk_data]     C:\Users\gagan\AppData\Roaming\nltk_data...
+[nltk_data]   Package punkt_tab is already up-to-date!
+[nltk_data] Downloading package wordnet to
+[nltk_data]     C:\Users\gagan\AppData\Roaming\nltk_data...
+[nltk_data]   Package wordnet is already up-to-date!
+[nltk_data] Downloading package omw-1.4 to
+[nltk_data]     C:\Users\gagan\AppData\Roaming\nltk_data...
+[nltk_data]   Package omw-1.4 is already up-to-date!
+
+================================================================================
+
+================================================================================
+DOMAIN 7/9: HUMANITIES - ✅ SUCCESS
+================================================================================
+Path: humanities
+Return Code: 0
+
+--------------------------------------------------------------------------------
+STDOUT:
+--------------------------------------------------------------------------------
+Using device: cuda
+Extracting humanities-specific handcrafted features...
+Setting up tokenizer...
+Creating evaluation dataset...
+Loading model from humanities.pt...
+Error loading model: Weights only load failed. In PyTorch 2.6, we changed the default value of the `weights_only` argument in `torch.load` from `False` to `True`. Re-running `torch.load` with `weights_only` set to `False` will likely succeed, but it can result in arbitrary code execution. Do it only if you got the file from a trusted source.
+Please file an issue with the following so that we can make `weights_only=True` compatible with your use case: WeightsUnpickler error: Unsupported operand 118
+
+Check the documentation of torch.load to learn more about types accepted by default with weights_only https://pytorch.org/docs/stable/generated/torch.load.html.
+
+--------------------------------------------------------------------------------
+STDERR:
+--------------------------------------------------------------------------------
+[nltk_data] Downloading package punkt_tab to
+[nltk_data]     C:\Users\gagan\AppData\Roaming\nltk_data...
+[nltk_data]   Package punkt_tab is already up-to-date!
+
+================================================================================
+
+================================================================================
+DOMAIN 8/9: PHYSICAL_SCIENCE - ❌ FAILED
+================================================================================
+Path: physical_science
+Return Code: None
+Error: Evaluation timed out after 10 minutes
+
+--------------------------------------------------------------------------------
+STDOUT:
+--------------------------------------------------------------------------------
+TIMEOUT - Process was killed
+================================================================================
+
+================================================================================
+DOMAIN 9/9: SOCIAL_SCIENCE - ✅ SUCCESS
+================================================================================
+Path: social_science
+Return Code: 0
+
+--------------------------------------------------------------------------------
+STDOUT:
+--------------------------------------------------------------------------------
+Using device: cuda
+Extracting social science-specific handcrafted features...
+Setting up tokenizer...
+Creating evaluation dataset...
+Loading model from social.pt...
+Loading BERT with reduced complexity for CPU processing
+Error loading model: Error(s) in loading state_dict for HierarchicalBiasPredictionModel:
+	Missing key(s) in state_dict: "sent_attention.weight", "sent_attention.bias", "sect_attention.weight", "sect_attention.bias". 
+	Unexpected key(s) in state_dict: "sent_attention_projection.weight", "sent_attention_projection.bias", "sent_attention_vector.weight", "sect_attention_projection.weight", "sect_attention_projection.bias", "sect_attention_vector.weight". 
+	size mismatch for feature_fusion.bert_projection.weight: copying a param with shape torch.Size([512, 768]) from checkpoint, the shape in current model is torch.Size([256, 768]).
+	size mismatch for feature_fusion.bert_projection.bias: copying a param with shape torch.Size([512]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for feature_fusion.handcrafted_projection.weight: copying a param with shape torch.Size([512, 29]) from checkpoint, the shape in current model is torch.Size([256, 22]).
+	size mismatch for feature_fusion.handcrafted_projection.bias: copying a param with shape torch.Size([512]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for feature_fusion.bert_bn.weight: copying a param with shape torch.Size([512]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for feature_fusion.bert_bn.bias: copying a param with shape torch.Size([512]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for feature_fusion.bert_bn.running_mean: copying a param with shape torch.Size([512]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for feature_fusion.bert_bn.running_var: copying a param with shape torch.Size([512]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for feature_fusion.handcrafted_bn.weight: copying a param with shape torch.Size([512]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for feature_fusion.handcrafted_bn.bias: copying a param with shape torch.Size([512]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for feature_fusion.handcrafted_bn.running_mean: copying a param with shape torch.Size([512]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for feature_fusion.handcrafted_bn.running_var: copying a param with shape torch.Size([512]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for feature_fusion.attention.in_proj_weight: copying a param with shape torch.Size([1536, 512]) from checkpoint, the shape in current model is torch.Size([768, 256]).
+	size mismatch for feature_fusion.attention.in_proj_bias: copying a param with shape torch.Size([1536]) from checkpoint, the shape in current model is torch.Size([768]).
+	size mismatch for feature_fusion.attention.out_proj.weight: copying a param with shape torch.Size([512, 512]) from checkpoint, the shape in current model is torch.Size([256, 256]).
+	size mismatch for feature_fusion.attention.out_proj.bias: copying a param with shape torch.Size([512]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for feature_fusion.gate.0.weight: copying a param with shape torch.Size([512, 1024]) from checkpoint, the shape in current model is torch.Size([256, 512]).
+	size mismatch for feature_fusion.gate.0.bias: copying a param with shape torch.Size([512]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for feature_fusion.gate.1.weight: copying a param with shape torch.Size([512]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for feature_fusion.gate.1.bias: copying a param with shape torch.Size([512]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for feature_fusion.gate.1.running_mean: copying a param with shape torch.Size([512]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for feature_fusion.gate.1.running_var: copying a param with shape torch.Size([512]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for feature_fusion.gate.4.weight: copying a param with shape torch.Size([512, 512]) from checkpoint, the shape in current model is torch.Size([256, 256]).
+	size mismatch for feature_fusion.gate.4.bias: copying a param with shape torch.Size([512]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for feature_fusion.layer_norm.weight: copying a param with shape torch.Size([1024]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for feature_fusion.layer_norm.bias: copying a param with shape torch.Size([1024]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for fc1.weight: copying a param with shape torch.Size([256, 1024]) from checkpoint, the shape in current model is torch.Size([256, 256]).
+	size mismatch for shortcut.weight: copying a param with shape torch.Size([128, 1024]) from checkpoint, the shape in current model is torch.Size([128, 256]).
+
+================================================================================
+
+
+================================================================================
+FAILED DOMAINS - DEBUGGING INFORMATION
+================================================================================
+
+PHYSICAL_SCIENCE
+--------------------------------------------------------------------------------
+Path: physical_science
+Error: Evaluation timed out after 10 minutes
+Return Code: None
+
+Standard Output:
+TIMEOUT - Process was killed
+
+================================================================================
+END OF EVALUATION RESULTS
+================================================================================

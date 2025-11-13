@@ -174,7 +174,7 @@ def main():
     test_features = []
     
     for _, row in test_df.iterrows():
-        features = extractor.extract_features(row['text'])
+        features = extractor.extract_features(row['text'], row.get('reason', ''))
         test_features.append(features)
     
     # Convert features to numpy array
@@ -186,7 +186,7 @@ def main():
     # Tokenization parameters (match training exactly)
     max_seq_length = 64
     max_sections = 3
-    max_sents = 3
+    max_sents = 4
     
     # Use dummy labels since we only need prediction
     dummy_labels = [0] * len(test_df)
