@@ -53,7 +53,41 @@ def load_papers(json_file_path):
 def load_trained_model(model_path, device):
     """Load the trained Humanities bias prediction model"""
     try:
-        state_dict = torch.load(model_path, map_location=device)
+        state_dict = None
+        
+        # Only try to load if model_path is provided
+        if model_path and os.path.exists(model_path):
+            # Check if file is a Git LFS pointer (usually < 200 bytes and starts with "version")
+            file_size = os.path.getsize(model_path)
+            if file_size < 200:
+                with open(model_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    first_line = f.readline().strip()
+                    if first_line.startswith('version https://git-lfs.github.com'):
+                        print(f"Warning: Model file is a Git LFS pointer, not the actual model.")
+                        print(f"File: {model_path}")
+                        print("Creating model with random weights (predictions will not be accurate).")
+                        print("To get accurate predictions, download the model using: git lfs pull")
+                        state_dict = None
+                    else:
+                        # Try to load even if small (might be valid)
+                        try:
+                            state_dict = torch.load(model_path, map_location=device, weights_only=False)
+                        except Exception as e:
+                            print(f"Warning: Could not load model file: {e}")
+                            print("Creating model with random weights (predictions will not be accurate).")
+                            state_dict = None
+            else:
+                # File exists and is large enough, try to load
+                try:
+                    state_dict = torch.load(model_path, map_location=device, weights_only=False)
+                except Exception as e:
+                    print(f"Warning: Could not load model file: {e}")
+                    print("Creating model with random weights (predictions will not be accurate).")
+                    state_dict = None
+        else:
+            print("Warning: No model file provided. Creating model with random weights.")
+            print("Predictions will not be accurate without a trained model.")
+            state_dict = None
         
         num_classes = 3
         feature_names = [
@@ -89,10 +123,16 @@ def load_trained_model(model_path, device):
                         dropout_rate=0.4
                     )
         
-        try:
-            model.load_state_dict(state_dict)
-        except Exception as load_error:
-            pass
+        # Only try to load state dict if we have one
+        if state_dict is not None:
+            try:
+                model.load_state_dict(state_dict)
+                print("Successfully loaded trained model weights.")
+            except Exception as load_error:
+                print(f"Warning: Could not load model weights: {load_error}")
+                print("Using randomly initialized model weights (predictions will not be accurate).")
+        else:
+            print("Using randomly initialized model weights (predictions will not be accurate).")
         
         model.to(device)
         model.eval()
@@ -100,6 +140,8 @@ def load_trained_model(model_path, device):
         return model, label_mapping, feature_names
     except Exception as e:
         print(f"Error loading model: {e}")
+        print(f"Model path: {model_path}")
+        print("Please ensure the model file exists and is a valid PyTorch model file.")
         return None, None, None
 
 def predict_papers(dataloader, model, device):
@@ -140,14 +182,41 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    model_path = os.path.join(script_dir, 'humanities.pt')
+    
+    # Try multiple possible model file names
+    possible_model_paths = [
+        os.path.join(script_dir, 'humanities.pt'),
+        os.path.join(script_dir, 'best_hierarchical_humanities_model.pt'),
+    ]
+    
+    model_path = None
+    for path in possible_model_paths:
+        if os.path.exists(path):
+            # Check if it's not a Git LFS pointer
+            file_size = os.path.getsize(path)
+            if file_size >= 200:
+                model_path = path
+                break
+            else:
+                # Check if it's a Git LFS pointer
+                try:
+                    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                        first_line = f.readline().strip()
+                        if not first_line.startswith('version https://git-lfs.github.com'):
+                            model_path = path
+                            break
+                except:
+                    pass
+    
+    if model_path is None:
+        print(f"Warning: No valid model file found!")
+        print(f"Checked paths: {possible_model_paths}")
+        print("Will create model with random weights (predictions will not be accurate).")
+        print("To get accurate predictions, please train the model or obtain the trained model file.")
+        # Continue with None model_path - load_trained_model will handle it gracefully
     
     if not os.path.exists(json_file_path):
         print(f"Error: {json_file_path} not found!")
-        return
-    
-    if not os.path.exists(model_path):
-        print(f"Error: {model_path} not found!")
         return
     
     test_df = load_papers(json_file_path)

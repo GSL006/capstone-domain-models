@@ -21,6 +21,26 @@ The `init.sh` script will:
 - 🔍 Verify all domain directories exist
 - 💾 Display system information (GPU/RAM)
 
+### 🔧 Virtual Environment Activation
+
+#### **Windows (CMD):**
+
+```
+venv\Scripts\activate
+```
+
+#### **Windows (PowerShell):**
+
+```
+venv\Scripts\Activate.ps1
+```
+
+#### **macOS / Linux:**
+
+```
+source venv/bin/activate
+```
+
 ### Manual Setup (Alternative)
 ```bash
 # Install dependencies

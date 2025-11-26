@@ -162,7 +162,8 @@ def main():
         - **No Bias**: No significant bias detected
         
         **Supported Domains:**
-        - 💻 Computer Science & Technology
+        - 💻 Computer Science
+        - 💻 Technology
         - 💰 Economics 
         - 💼 Business
         - 🌱 Environmental Science

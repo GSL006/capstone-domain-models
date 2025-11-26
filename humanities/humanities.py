@@ -1247,7 +1247,12 @@ def main():
     
     # Load papers
     try:
-        papers_df = load_papers_from_json('/kaggle/input/humanities/humanities_papers.json')
+        # Try local file first, then Kaggle path
+        local_path = 'humanities_papers.json'
+        if os.path.exists(local_path):
+            papers_df = load_papers_from_json(local_path)
+        else:
+            papers_df = load_papers_from_json('/kaggle/input/humanities/humanities_papers.json')
         print(f"Loaded {len(papers_df)} humanities papers")
         
         print("Class distribution:")
@@ -1542,6 +1547,11 @@ def main():
     # Analyze feature importance
     print("Analyzing humanities-specific feature importance...")
     analyze_humanities_feature_importance(model, feature_names)
+    
+    # Save final model as humanities.pt for use with evaluate_upload.py
+    print("Saving final model as humanities.pt...")
+    torch.save(model.state_dict(), 'humanities.pt')
+    print("Model saved as humanities.pt")
     
     print("Humanities bias detection analysis complete!")
 

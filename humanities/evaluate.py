@@ -113,7 +113,7 @@ def evaluate_model(model_path, papers_df, feature_names, device='cpu'):
     # Load model
     print(f"Loading model from {model_path}...")
     try:
-        model_state = torch.load(model_path, map_location=device)
+        model_state = torch.load(model_path, map_location=device, weights_only=False)
         
         model = HierarchicalBiasPredictionModel(
             bert_model_name='allenai/scibert_scivocab_uncased',
